@@ -53,9 +53,43 @@ def _settings(args: argparse.Namespace) -> Settings:
     )
 
 
+def _merge_matches(matches: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for match in matches:
+        key = (str(match.get("source")), str(match.get("locator")))
+        groups.setdefault(key, []).append(match)
+
+    merged = []
+    for group in groups.values():
+        group.sort(key=lambda item: int(item.get("chunk", 0)))
+        for item in group:
+            current = dict(item)
+            if merged and (
+                merged[-1].get("source") == current.get("source")
+                and merged[-1].get("locator") == current.get("locator")
+                and int(current.get("chunk", 0)) == int(merged[-1].get("last_chunk", 0)) + 1
+            ):
+                previous = str(merged[-1]["text"])
+                following = str(current["text"])
+                overlap = next(
+                    (
+                        size
+                        for size in range(min(len(previous), len(following)), 0, -1)
+                        if previous.endswith(following[:size])
+                    ),
+                    0,
+                )
+                merged[-1]["text"] = previous + following[overlap:]
+                merged[-1]["last_chunk"] = current.get("chunk", 0)
+            else:
+                current["last_chunk"] = current.get("chunk", 0)
+                merged.append(current)
+    return merged
+
+
 def _answer(question: str, top_k: int, store: Store, provider) -> None:
     vector = provider.embed([question])[0]
-    matches = store.search(vector, top_k)
+    matches = _merge_matches(store.search(vector, top_k))
     if not matches:
         print("No indexed context found.")
         return
@@ -118,4 +152,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

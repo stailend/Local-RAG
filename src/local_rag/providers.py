@@ -51,6 +51,7 @@ class OllamaProvider(ModelProvider):
                         "content": f"Context:\n{context}\n\nQuestion: {question}",
                     },
                 ],
+                "options": {"temperature": 0},
             },
         )
         response.raise_for_status()
