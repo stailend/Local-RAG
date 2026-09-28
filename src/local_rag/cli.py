@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from functools import lru_cache
@@ -9,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from .config import Settings
+from .evaluation import evaluate, load_cases
 from .providers import provider_from_settings
 from .store import Store
 
@@ -26,8 +28,11 @@ def parser() -> argparse.ArgumentParser:
 
     ingest = commands.add_parser("ingest", help="index a file or directory")
     ingest.add_argument("path", type=Path)
-    ingest.add_argument("--chunk-size", type=int, default=1200)
-    ingest.add_argument("--overlap", type=int, default=200)
+    sync = commands.add_parser("sync", help="mirror a directory into the collection")
+    sync.add_argument("path", type=Path)
+    for command in (ingest, sync):
+        command.add_argument("--chunk-size", type=int, default=1200)
+        command.add_argument("--overlap", type=int, default=200)
 
     ask = commands.add_parser("ask", help="ask one question")
     ask.add_argument("question")
@@ -43,6 +48,16 @@ def parser() -> argparse.ArgumentParser:
             "--rerank-model",
             default=os.getenv("LOCAL_RAG_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2"),
         )
+
+    evaluation = commands.add_parser("evaluate", help="benchmark retrieval")
+    evaluation.add_argument("dataset", type=Path)
+    evaluation.add_argument("--top-k", type=int, default=5)
+    evaluation.add_argument("--candidates", type=int, default=20)
+    evaluation.add_argument("--json", action="store_true")
+    evaluation.add_argument(
+        "--rerank-model",
+        default=os.getenv("LOCAL_RAG_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2"),
+    )
 
     commands.add_parser("status", help="show collection status")
     delete = commands.add_parser("delete", help="delete the collection")
@@ -177,10 +192,55 @@ def _search(question: str, args, store: Store, provider) -> None:
         print(f"   {str(item.get('text'))[:300]}\n")
 
 
+def _evaluate(args, store: Store, provider) -> None:
+    cases = load_cases(args.dataset)
+    vectors = {
+        str(case["question"]): provider.embed([str(case["question"])])[0]
+        for case in cases
+    }
+
+    def retrieve(profile: str, question: str) -> list[dict]:
+        vector = vectors[question]
+        if profile == "dense":
+            return store.search(question, vector, args.top_k, mode="dense")
+        if profile == "hybrid":
+            return store.search(
+                question,
+                vector,
+                args.top_k,
+                mode="hybrid",
+                candidates=args.candidates,
+            )
+        matches = store.search(
+            question,
+            vector,
+            args.candidates,
+            mode="hybrid",
+            candidates=args.candidates,
+        )
+        return _rerank(
+            question, matches, args.top_k, args.rerank_model
+        )
+
+    rows = evaluate(
+        cases, ["dense", "hybrid", "hybrid+reranker"], retrieve
+    )
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return
+    print(f"{'profile':<20} {'cases':>5} {'recall@k':>10} {'mrr':>8} {'median_ms':>11}")
+    for row in rows:
+        print(
+            f"{row['profile']:<20} {row['cases']:>5} "
+            f"{row['recall']:>9.1%} {row['mrr']:>8.3f} "
+            f"{row['median_ms']:>11.1f}"
+        )
+
+
 def run(args: argparse.Namespace) -> None:
     settings = _settings(args)
     store = Store(settings.qdrant_url, settings.collection)
-    if args.command in {"ask", "chat", "search"} and (
+    if args.command in {"ask", "chat", "search", "evaluate"} and (
         args.top_k < 1 or args.candidates < args.top_k
     ):
         raise ValueError("candidates must be greater than or equal to top-k >= 1")
@@ -205,10 +265,23 @@ def run(args: argparse.Namespace) -> None:
             raise ValueError(f"path does not exist: {args.path}")
         result = store.ingest(args.path, provider, args.chunk_size, args.overlap)
         print(f"indexed {result.files} files / {result.chunks} chunks; skipped {result.skipped}")
+    elif args.command == "sync":
+        if not args.path.is_dir():
+            raise ValueError(f"sync path must be a directory: {args.path}")
+        result = store.sync(args.path, provider, args.chunk_size, args.overlap)
+        print(
+            f"added={result.added} updated={result.updated} "
+            f"deleted={result.deleted} unchanged={result.unchanged} "
+            f"skipped={result.skipped} chunks={result.chunks}"
+        )
     elif args.command == "ask":
         _answer(args.question, args, store, provider)
     elif args.command == "search":
         _search(args.question, args, store, provider)
+    elif args.command == "evaluate":
+        if not args.dataset.is_file():
+            raise ValueError(f"dataset does not exist: {args.dataset}")
+        _evaluate(args, store, provider)
     elif args.command == "chat":
         while True:
             try:

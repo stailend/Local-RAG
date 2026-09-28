@@ -1,0 +1,17 @@
+[
+  {
+    "question": "When does the first expedition start?",
+    "expected_source": "project.md",
+    "expected_text": "14 February 2027"
+  },
+  {
+    "question": "Where are emergency supplies stored?",
+    "expected_source": "project.md",
+    "expected_text": "locker 42"
+  },
+  {
+    "question": "What is the retrieval latency target?",
+    "expected_source": "project.md",
+    "expected_text": "below 200 milliseconds"
+  }
+]

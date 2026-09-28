@@ -18,6 +18,16 @@ class IngestResult:
     skipped: int
 
 
+@dataclass(frozen=True)
+class SyncResult:
+    added: int
+    updated: int
+    deleted: int
+    unchanged: int
+    skipped: int
+    chunks: int
+
+
 class Store:
     def __init__(
         self,
@@ -35,7 +45,14 @@ class Store:
         self.collection = collection
         self._sparse_encoder = sparse_encoder
 
-    def ingest(self, root: Path, provider, chunk_size: int, overlap: int) -> IngestResult:
+    def ingest(
+        self,
+        root: Path,
+        provider,
+        chunk_size: int,
+        overlap: int,
+        extra_payload: dict | None = None,
+    ) -> IngestResult:
         files = discover(root)
         total_chunks = 0
         indexed_files = 0
@@ -48,6 +65,7 @@ class Store:
                 for section in extract(path):
                     for index, text in enumerate(chunks(section.text, chunk_size, overlap)):
                         records.append((text, {
+                            **(extra_payload or {}),
                             "source": source,
                             "source_id": source_id,
                             "locator": section.locator,
@@ -96,33 +114,99 @@ class Store:
             indexed_files += 1
         return IngestResult(indexed_files, total_chunks, skipped)
 
+    def sync(
+        self, root: Path, provider, chunk_size: int, overlap: int
+    ) -> SyncResult:
+        root_id = str(root.resolve())
+        files = discover(root)
+        current_sources = {str(path.resolve()) for path in files}
+        existing = self._synced_sources(root_id)
+        hashes: dict[str, str] = {}
+        skipped = 0
+        for path in files:
+            try:
+                hashes[str(path.resolve())] = self._file_hash(path)
+            except OSError as exc:
+                print(f"skip {path}: {exc}")
+                skipped += 1
+
+        added = updated = unchanged = chunks_count = 0
+        for path in files:
+            source = str(path.resolve())
+            file_hash = hashes.get(source)
+            if file_hash is None:
+                continue
+            previous = existing.get(source)
+            if previous and previous[0] == file_hash:
+                unchanged += 1
+                continue
+            result = self.ingest(
+                path,
+                provider,
+                chunk_size,
+                overlap,
+                {"sync_root": root_id, "file_hash": file_hash},
+            )
+            if result.skipped:
+                skipped += result.skipped
+                continue
+            added += previous is None
+            updated += previous is not None
+            chunks_count += result.chunks
+
+        deleted = 0
+        for source in existing.keys() - current_sources:
+            self._delete_source(existing[source][1])
+            deleted += 1
+        return SyncResult(added, updated, deleted, unchanged, skipped, chunks_count)
+
     def search(
         self,
         text: str,
         vector: list[float],
         limit: int,
         explain: bool = False,
+        mode: str = "hybrid",
+        candidates: int | None = None,
     ) -> list[dict]:
         self._validate_collection(len(vector))
-        sparse = next(iter(self._sparse().query_embed(text)))
-        sparse_query = models.SparseVector(
-            indices=sparse.indices.tolist(), values=sparse.values.tolist()
-        )
-        result = self.client.query_points(
-            collection_name=self.collection,
-            prefetch=[
-                models.Prefetch(query=vector, using="dense", limit=limit),
-                models.Prefetch(query=sparse_query, using="bm25", limit=limit),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=limit,
-            with_payload=True,
-        )
+        sparse_query = None
+        if mode == "dense":
+            result = self.client.query_points(
+                collection_name=self.collection,
+                query=vector,
+                using="dense",
+                limit=limit,
+                with_payload=True,
+            )
+        elif mode == "hybrid":
+            sparse = next(iter(self._sparse().query_embed(text)))
+            sparse_query = models.SparseVector(
+                indices=sparse.indices.tolist(), values=sparse.values.tolist()
+            )
+            prefetch_limit = candidates or limit
+            result = self.client.query_points(
+                collection_name=self.collection,
+                prefetch=[
+                    models.Prefetch(
+                        query=vector, using="dense", limit=prefetch_limit
+                    ),
+                    models.Prefetch(
+                        query=sparse_query, using="bm25", limit=prefetch_limit
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            )
+        else:
+            raise ValueError("search mode must be 'dense' or 'hybrid'")
         dense_ranks: dict[Any, int] = {}
         sparse_ranks: dict[Any, int] = {}
         if explain:
             dense_ranks = self._ranks(vector, "dense", limit)
-            sparse_ranks = self._ranks(sparse_query, "bm25", limit)
+            if sparse_query is not None:
+                sparse_ranks = self._ranks(sparse_query, "bm25", limit)
         return [
             {
                 **(point.payload or {}),
@@ -210,3 +294,51 @@ class Store:
             ),
             wait=True,
         )
+
+    def _synced_sources(self, root_id: str) -> dict[str, tuple[str, str]]:
+        if not self.client.collection_exists(self.collection):
+            return {}
+        result: dict[str, tuple[str, str]] = {}
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=models.Filter(
+                    must=[models.FieldCondition(
+                        key="sync_root", match=models.MatchValue(value=root_id)
+                    )]
+                ),
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                if payload.get("source") and payload.get("file_hash"):
+                    result[str(payload["source"])] = (
+                        str(payload["file_hash"]), str(payload["source_id"])
+                    )
+            if offset is None:
+                return result
+
+    def _delete_source(self, source_id: str) -> None:
+        self.client.delete(
+            self.collection,
+            models.FilterSelector(
+                filter=models.Filter(
+                    must=[models.FieldCondition(
+                        key="source_id", match=models.MatchValue(value=source_id)
+                    )]
+                )
+            ),
+            wait=True,
+        )
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()

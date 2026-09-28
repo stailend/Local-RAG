@@ -81,6 +81,37 @@ class StoreTest(unittest.TestCase):
                 ),
             )
 
+    def test_sync_adds_updates_skips_and_deletes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            knowledge = root / "knowledge"
+            knowledge.mkdir()
+            first = knowledge / "first.md"
+            removed = knowledge / "removed.md"
+            first.write_text("Cats are quiet pets.", encoding="utf-8")
+            removed.write_text("Dogs enjoy walks.", encoding="utf-8")
+            store = Store(
+                "",
+                "sync",
+                QdrantClient(path=str(root / "qdrant")),
+                FakeSparse(),
+            )
+
+            initial = store.sync(knowledge, FakeProvider(), 1000, 100)
+            unchanged = store.sync(knowledge, FakeProvider(), 1000, 100)
+            first.write_text("Cats sleep most of the day.", encoding="utf-8")
+            removed.unlink()
+            (knowledge / "added.md").write_text("Birds can fly.", encoding="utf-8")
+            changed = store.sync(knowledge, FakeProvider(), 1000, 100)
+
+            self.assertEqual((initial.added, initial.updated, initial.deleted), (2, 0, 0))
+            self.assertEqual(unchanged.unchanged, 2)
+            self.assertEqual(
+                (changed.added, changed.updated, changed.deleted, changed.unchanged),
+                (1, 1, 1, 0),
+            )
+            self.assertEqual(store.status()[0], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,8 @@ Ollama model or any OpenAI-compatible API.
 - deterministic chunk IDs and safe re-indexing without duplicates
 - hybrid dense + BM25 retrieval with Reciprocal Rank Fusion
 - local ONNX cross-encoder reranking
+- incremental folder sync using SHA-256 file hashes
+- retrieval evaluation across dense, hybrid, and reranked profiles
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
 - source and page/slide citations in every answer
@@ -74,6 +76,43 @@ The default reranker is the small English `ms-marco-TinyBERT-L-2-v2`. Set
 `LOCAL_RAG_RERANK_MODEL=ms-marco-MultiBERT-L-12` for multilingual retrieval.
 Models are downloaded once into `~/.cache/local-rag`.
 
+## Incremental sync
+
+Mirror a directory into a collection without embedding unchanged files:
+
+```bash
+local-rag sync ./knowledge
+```
+
+The command reports added, updated, deleted, unchanged, and skipped files.
+Unlike `ingest`, it removes indexed files that no longer exist below the same
+directory root. Each sync root is tracked independently inside the collection.
+
+## Evaluation
+
+Create a JSON dataset with expected source, locator, or text constraints:
+
+```json
+[
+  {
+    "question": "Where are emergency supplies stored?",
+    "expected_source": "project.md",
+    "expected_text": "locker 42"
+  }
+]
+```
+
+Then compare all retrieval profiles:
+
+```bash
+local-rag evaluate examples/evaluation.json
+local-rag evaluate examples/evaluation.json --json
+```
+
+The report includes Recall@K, mean reciprocal rank, and median retrieval time
+for dense, hybrid, and hybrid+reranker. Query embedding time is excluded so
+the retrieval stages are compared fairly.
+
 If Docker is unavailable, use Qdrant's persistent embedded mode instead:
 
 ```bash
@@ -128,9 +167,8 @@ local-rag status
 local-rag --collection old delete --yes
 ```
 
-Re-ingesting a file replaces its existing chunks. Files removed from the source
-directory are not automatically deleted; delete and rebuild the collection when
-you need an exact mirror.
+Re-ingesting a file replaces its existing chunks. Use `sync` instead when the
+collection must exactly mirror a directory.
 
 Collections created before hybrid search used a legacy single-vector schema.
 Delete and re-ingest them once:
