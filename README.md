@@ -10,6 +10,8 @@ Ollama model or any OpenAI-compatible API.
 - OCR for PNG, JPEG, WebP, TIFF, and BMP images
 - DOCX, PPTX, HTML, Markdown, text, data files, and source code
 - deterministic chunk IDs and safe re-indexing without duplicates
+- hybrid dense + BM25 retrieval with Reciprocal Rank Fusion
+- local ONNX cross-encoder reranking
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
 - source and page/slide citations in every answer
@@ -21,10 +23,11 @@ Ollama model or any OpenAI-compatible API.
 flowchart LR
     A[Local folder] --> B[Extract text / OCR]
     B --> C[Chunk]
-    C --> D[Embedding model]
+    C --> D[Dense + BM25 embeddings]
     D --> E[(Qdrant collection)]
-    Q[Question] --> D
-    E --> R[Top-k retrieval]
+    Q[Question] --> H[Dense + BM25 search]
+    E --> H
+    H --> R[RRF + local reranker]
     R --> L[Local or remote LLM]
     L --> O[Answer with sources]
 ```
@@ -51,6 +54,25 @@ ollama pull qwen2.5:7b
 local-rag ingest ./knowledge
 local-rag ask "What are the main conclusions?"
 ```
+
+Inspect retrieval decisions without calling the chat model:
+
+```bash
+local-rag search "RentenNavi uptime" --explain
+```
+
+The command shows dense and sparse ranks, the fused RRF score, and the final
+reranker score. Retrieval fetches 20 candidates and reranks the best 5 by
+default. Tune or disable that stage when latency matters:
+
+```bash
+local-rag ask "Question" --candidates 30 --top-k 8
+local-rag ask "Question" --no-rerank
+```
+
+The default reranker is the small English `ms-marco-TinyBERT-L-2-v2`. Set
+`LOCAL_RAG_RERANK_MODEL=ms-marco-MultiBERT-L-12` for multilingual retrieval.
+Models are downloaded once into `~/.cache/local-rag`.
 
 If Docker is unavailable, use Qdrant's persistent embedded mode instead:
 
@@ -109,6 +131,14 @@ local-rag --collection old delete --yes
 Re-ingesting a file replaces its existing chunks. Files removed from the source
 directory are not automatically deleted; delete and rebuild the collection when
 you need an exact mirror.
+
+Collections created before hybrid search used a legacy single-vector schema.
+Delete and re-ingest them once:
+
+```bash
+local-rag --collection documents delete --yes
+local-rag --collection documents ingest ./knowledge
+```
 
 ## Supported formats
 

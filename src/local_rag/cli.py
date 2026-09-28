@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -29,10 +31,18 @@ def parser() -> argparse.ArgumentParser:
 
     ask = commands.add_parser("ask", help="ask one question")
     ask.add_argument("question")
-    ask.add_argument("--top-k", type=int, default=5)
-
     chat = commands.add_parser("chat", help="interactive question loop")
-    chat.add_argument("--top-k", type=int, default=5)
+    search = commands.add_parser("search", help="inspect retrieved chunks")
+    search.add_argument("question")
+    search.add_argument("--explain", action="store_true")
+    for command in (ask, chat, search):
+        command.add_argument("--top-k", type=int, default=5)
+        command.add_argument("--candidates", type=int, default=20)
+        command.add_argument("--no-rerank", action="store_true")
+        command.add_argument(
+            "--rerank-model",
+            default=os.getenv("LOCAL_RAG_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2"),
+        )
 
     commands.add_parser("status", help="show collection status")
     delete = commands.add_parser("delete", help="delete the collection")
@@ -87,9 +97,59 @@ def _merge_matches(matches: list[dict]) -> list[dict]:
     return merged
 
 
-def _answer(question: str, top_k: int, store: Store, provider) -> None:
+@lru_cache(maxsize=2)
+def _ranker(model_name: str):
+    from flashrank import Ranker
+
+    cache = os.getenv(
+        "LOCAL_RAG_MODEL_CACHE", str(Path.home() / ".cache" / "local-rag")
+    )
+    return Ranker(model_name=model_name, cache_dir=cache, log_level="WARNING")
+
+
+def _rerank(
+    question: str,
+    matches: list[dict],
+    limit: int,
+    model_name: str,
+    ranker=None,
+) -> list[dict]:
+    from flashrank import RerankRequest
+
+    if not matches:
+        return []
+    passages = [
+        {"id": number, "text": match["text"], "meta": match}
+        for number, match in enumerate(matches)
+    ]
+    ranked = (ranker or _ranker(model_name)).rerank(
+        RerankRequest(query=question, passages=passages)
+    )
+    return [
+        {**item["meta"], "_rerank_score": float(item["score"])}
+        for item in ranked[:limit]
+    ]
+
+
+def _retrieve(question: str, args, store: Store, provider) -> list[dict]:
     vector = provider.embed([question])[0]
-    matches = _merge_matches(store.search(vector, top_k))
+    matches = store.search(
+        question,
+        vector,
+        args.candidates,
+        args.command == "search" and args.explain,
+    )
+    if not args.no_rerank:
+        matches = _rerank(
+            question, matches, args.top_k, args.rerank_model
+        )
+    else:
+        matches = matches[: args.top_k]
+    return matches
+
+
+def _answer(question: str, args, store: Store, provider) -> None:
+    matches = _merge_matches(_retrieve(question, args, store, provider))
     if not matches:
         print("No indexed context found.")
         return
@@ -103,9 +163,27 @@ def _answer(question: str, top_k: int, store: Store, provider) -> None:
         print(f"[{number}] {item.get('source')} ({item.get('locator')})")
 
 
+def _search(question: str, args, store: Store, provider) -> None:
+    matches = _retrieve(question, args, store, provider)
+    for number, item in enumerate(matches, 1):
+        print(f"{number}. {item.get('source')} ({item.get('locator')})")
+        if args.explain:
+            print(
+                f"   dense_rank={item.get('_dense_rank')} "
+                f"sparse_rank={item.get('_sparse_rank')} "
+                f"fused_score={item.get('_fused_score', 0):.4f} "
+                f"rerank_score={item.get('_rerank_score', 0):.4f}"
+            )
+        print(f"   {str(item.get('text'))[:300]}\n")
+
+
 def run(args: argparse.Namespace) -> None:
     settings = _settings(args)
     store = Store(settings.qdrant_url, settings.collection)
+    if args.command in {"ask", "chat", "search"} and (
+        args.top_k < 1 or args.candidates < args.top_k
+    ):
+        raise ValueError("candidates must be greater than or equal to top-k >= 1")
     if args.command == "status":
         count, status = store.status()
         print(f"collection={settings.collection} points={count} status={status}")
@@ -128,7 +206,9 @@ def run(args: argparse.Namespace) -> None:
         result = store.ingest(args.path, provider, args.chunk_size, args.overlap)
         print(f"indexed {result.files} files / {result.chunks} chunks; skipped {result.skipped}")
     elif args.command == "ask":
-        _answer(args.question, args.top_k, store, provider)
+        _answer(args.question, args, store, provider)
+    elif args.command == "search":
+        _search(args.question, args, store, provider)
     elif args.command == "chat":
         while True:
             try:
@@ -139,7 +219,7 @@ def run(args: argparse.Namespace) -> None:
             if question in {"exit", "quit"}:
                 return
             if question:
-                _answer(question, args.top_k, store, provider)
+                _answer(question, args, store, provider)
 
 
 def main() -> None:

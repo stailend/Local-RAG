@@ -4,6 +4,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from qdrant_client import QdrantClient, models
 
@@ -18,7 +19,13 @@ class IngestResult:
 
 
 class Store:
-    def __init__(self, url: str, collection: str, client: QdrantClient | None = None):
+    def __init__(
+        self,
+        url: str,
+        collection: str,
+        client: QdrantClient | None = None,
+        sparse_encoder: Any = None,
+    ):
         if client:
             self.client = client
         elif url.startswith("file://"):
@@ -26,6 +33,7 @@ class Store:
         else:
             self.client = QdrantClient(url=url)
         self.collection = collection
+        self._sparse_encoder = sparse_encoder
 
     def ingest(self, root: Path, provider, chunk_size: int, overlap: int) -> IngestResult:
         files = discover(root)
@@ -59,15 +67,26 @@ class Store:
                     [text for text, _ in records[offset : offset + 32]]
                 ))
             self._ensure_collection(len(vectors[0]))
+            sparse_vectors = list(
+                self._sparse().embed([text for text, _ in records])
+            )
             version = hashlib.sha256(
                 "\n".join(text for text, _ in records).encode()
             ).hexdigest()
             points = []
-            for (text, payload), vector in zip(records, vectors, strict=True):
+            for (text, payload), vector, sparse in zip(
+                records, vectors, sparse_vectors, strict=True
+            ):
                 fingerprint = f"{payload['source_id']}:{payload['locator']}:{payload['chunk']}:{text}"
                 points.append(models.PointStruct(
                     id=str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint)),
-                    vector=vector,
+                    vector={
+                        "dense": vector,
+                        "bm25": models.SparseVector(
+                            indices=sparse.indices.tolist(),
+                            values=sparse.values.tolist(),
+                        ),
+                    },
                     payload={**payload, "source_version": version, "text": text},
                 ))
             for offset in range(0, len(points), 100):
@@ -77,14 +96,42 @@ class Store:
             indexed_files += 1
         return IngestResult(indexed_files, total_chunks, skipped)
 
-    def search(self, vector: list[float], limit: int) -> list[dict]:
+    def search(
+        self,
+        text: str,
+        vector: list[float],
+        limit: int,
+        explain: bool = False,
+    ) -> list[dict]:
+        self._validate_collection(len(vector))
+        sparse = next(iter(self._sparse().query_embed(text)))
+        sparse_query = models.SparseVector(
+            indices=sparse.indices.tolist(), values=sparse.values.tolist()
+        )
         result = self.client.query_points(
             collection_name=self.collection,
-            query=vector,
+            prefetch=[
+                models.Prefetch(query=vector, using="dense", limit=limit),
+                models.Prefetch(query=sparse_query, using="bm25", limit=limit),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=limit,
             with_payload=True,
         )
-        return [point.payload or {} for point in result.points]
+        dense_ranks: dict[Any, int] = {}
+        sparse_ranks: dict[Any, int] = {}
+        if explain:
+            dense_ranks = self._ranks(vector, "dense", limit)
+            sparse_ranks = self._ranks(sparse_query, "bm25", limit)
+        return [
+            {
+                **(point.payload or {}),
+                "_fused_score": point.score,
+                "_dense_rank": dense_ranks.get(point.id),
+                "_sparse_rank": sparse_ranks.get(point.id),
+            }
+            for point in result.points
+        ]
 
     def status(self) -> tuple[int, str]:
         if not self.client.collection_exists(self.collection):
@@ -97,13 +144,56 @@ class Store:
             self.client.delete_collection(self.collection)
 
     def _ensure_collection(self, vector_size: int) -> None:
-        if not self.client.collection_exists(self.collection):
-            self.client.create_collection(
-                self.collection,
-                vectors_config=models.VectorParams(
+        if self.client.collection_exists(self.collection):
+            self._validate_collection(vector_size)
+            return
+        self.client.create_collection(
+            self.collection,
+            vectors_config={
+                "dense": models.VectorParams(
                     size=vector_size, distance=models.Distance.COSINE
-                ),
+                )
+            },
+            sparse_vectors_config={
+                "bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)
+            },
+        )
+
+    def _sparse(self):
+        if self._sparse_encoder is None:
+            from fastembed import SparseTextEmbedding
+
+            self._sparse_encoder = SparseTextEmbedding("Qdrant/bm25")
+        return self._sparse_encoder
+
+    def _validate_collection(self, vector_size: int) -> None:
+        if not self.client.collection_exists(self.collection):
+            raise ValueError(
+                f"collection '{self.collection}' does not exist; ingest documents first"
             )
+        params = self.client.get_collection(self.collection).config.params
+        if (
+            not isinstance(params.vectors, dict)
+            or "dense" not in params.vectors
+            or not params.sparse_vectors
+            or "bm25" not in params.sparse_vectors
+        ):
+            raise ValueError(
+                f"collection '{self.collection}' uses the legacy schema; "
+                "delete it and ingest again"
+            )
+        if params.vectors["dense"].size != vector_size:
+            raise ValueError("embedding size does not match the existing collection")
+
+    def _ranks(self, query, using: str, limit: int) -> dict[Any, int]:
+        result = self.client.query_points(
+            collection_name=self.collection,
+            query=query,
+            using=using,
+            limit=limit,
+            with_payload=False,
+        )
+        return {point.id: rank for rank, point in enumerate(result.points, 1)}
 
     def _delete_stale_source(self, source_id: str, current_version: str) -> None:
         self.client.delete(
