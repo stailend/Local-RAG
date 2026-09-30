@@ -192,6 +192,30 @@ for example, `LOCAL_RAG_OCR_LANGUAGE=eng+deu+rus` for multilingual documents.
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
+## Hierarchical retrieval experiment
+
+Test whether routing through a tree of grouped embeddings can replace an
+exhaustive scan. The benchmark downloads a cached slice of
+[BookSum](https://github.com/salesforce/booksum), embeds chapter analyses and
+summaries with Ollama, and compares exact search with centroid and one-component
+PCA representatives:
+
+```bash
+python experiments/hierarchical_retrieval.py --samples 500
+```
+
+The JSON report includes task Recall@K, ANN Recall@K against exact search, MRR,
+median latency, index build time, and the mean number of vector comparisons.
+Dataset files and embeddings stay below `.localrag/benchmarks` and are not
+committed.
+
+On a 500-row BookSum test slice with `branching=8, beam=4`, centroid routing
+cut comparisons from 500 to 71.6 while retaining 75.9% ANN Recall@5. The
+centered one-component PCA representative retained only 13.0%; it is not a
+useful aggregation strategy here. At this small scale Python overhead erased
+the latency win, so this is a candidate for much larger collections—not a
+replacement for Qdrant's HNSW index yet.
+
 ## Privacy model
 
 With the default Ollama provider, document text and questions stay on the local

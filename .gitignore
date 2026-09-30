@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .localrag/
+.cache/
 .DS_Store
 dist/
 build/
