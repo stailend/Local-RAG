@@ -14,6 +14,7 @@ Ollama model or any OpenAI-compatible API.
 - local ONNX cross-encoder reranking
 - incremental folder sync using SHA-256 file hashes
 - retrieval evaluation across dense, hybrid, and reranked profiles
+- local REST API and browser chat UI
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
 - source and page/slide citations in every answer
@@ -112,6 +113,19 @@ local-rag evaluate examples/evaluation.json --json
 The report includes Recall@K, mean reciprocal rank, and median retrieval time
 for dense, hybrid, and hybrid+reranker. Query embedding time is excluded so
 the retrieval stages are compared fairly.
+
+## Local web UI and REST API
+
+Start the local browser UI on top of the same collection and provider:
+
+```bash
+local-rag serve
+open http://127.0.0.1:8000
+```
+
+The API exposes `GET /api/status`, `POST /api/search`, and `POST /api/ask`.
+The server binds to `127.0.0.1` by default; set `LOCAL_RAG_HOST` only when you
+intentionally want to expose it on another interface.
 
 If Docker is unavailable, use Qdrant's persistent embedded mode instead:
 

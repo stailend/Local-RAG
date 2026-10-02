@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local-RAG</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; }
+    body { max-width: 900px; margin: 0 auto; padding: 32px 20px; background: #101318; color: #eef2f7; }
+    h1 { margin-bottom: 4px; } .muted { color: #9ca8b8; }
+    form { display: flex; gap: 10px; margin: 28px 0; }
+    input { flex: 1; padding: 13px; border: 1px solid #3b4656; border-radius: 8px; background: #171d26; color: inherit; }
+    button { padding: 12px 18px; border: 0; border-radius: 8px; background: #3b82f6; color: white; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #answer { white-space: pre-wrap; line-height: 1.55; }
+    .card { margin-top: 16px; padding: 18px; border: 1px solid #2b3543; border-radius: 10px; background: #151b24; }
+    li { margin: 10px 0; color: #b9c5d4; } code { color: #8fc7ff; }
+    #status { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Local-RAG</h1>
+  <div id="status" class="muted">Checking index…</div>
+  <form id="form">
+    <input id="question" autocomplete="off" placeholder="Ask about your indexed documents…" required>
+    <button id="submit">Ask</button>
+  </form>
+  <section class="card"><div id="answer" class="muted">Your answer will appear here.</div></section>
+  <section class="card"><strong>Sources</strong><ul id="sources"></ul></section>
+  <script>
+    const $ = id => document.getElementById(id);
+    async function status() {
+      try {
+        const data = await fetch('/api/status').then(r => r.json());
+        $('status').textContent = `${data.points} chunks · ${data.collection} · ${data.provider}`;
+      } catch (error) { $('status').textContent = 'Index unavailable'; }
+    }
+    $('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      $('submit').disabled = true; $('answer').textContent = 'Thinking…'; $('sources').textContent = '';
+      try {
+        const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value}) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Request failed');
+        $('answer').textContent = data.answer;
+        for (const source of data.sources) {
+          const item = document.createElement('li'); item.textContent = `${source.source} · ${source.locator} · chunk ${source.chunk}`; $('sources').append(item);
+        }
+      } catch (error) { $('answer').textContent = error.message; }
+      finally { $('submit').disabled = false; }
+    });
+    status();
+  </script>
+</body>
+</html>

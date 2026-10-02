@@ -60,6 +60,9 @@ def parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("status", help="show collection status")
+    serve = commands.add_parser("serve", help="start the local web UI and API")
+    serve.add_argument("--host", default=os.getenv("LOCAL_RAG_HOST", "127.0.0.1"))
+    serve.add_argument("--port", type=int, default=int(os.getenv("LOCAL_RAG_PORT", "8000")))
     delete = commands.add_parser("delete", help="delete the collection")
     delete.add_argument("--yes", action="store_true")
     commands.add_parser("doctor", help="check database and model provider")
@@ -260,6 +263,10 @@ def run(args: argparse.Namespace) -> None:
         count, status = store.status()
         provider.healthcheck()
         print(f"ok: qdrant={status} points={count}, provider={settings.provider}")
+    elif args.command == "serve":
+        from .api import serve
+
+        serve(settings, args.host, args.port)
     elif args.command == "ingest":
         if not args.path.exists():
             raise ValueError(f"path does not exist: {args.path}")
