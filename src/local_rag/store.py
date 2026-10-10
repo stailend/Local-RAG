@@ -52,6 +52,7 @@ class Store:
         chunk_size: int,
         overlap: int,
         extra_payload: dict | None = None,
+        progress=None,
     ) -> IngestResult:
         files = discover(root)
         total_chunks = 0
@@ -79,11 +80,15 @@ class Store:
                 skipped += 1
                 continue
 
+            if progress:
+                progress("embedding", 0, len(records))
             vectors = []
             for offset in range(0, len(records), 32):
                 vectors.extend(provider.embed(
                     [text for text, _ in records[offset : offset + 32]]
                 ))
+                if progress:
+                    progress("embedding", len(vectors), len(records))
             self._ensure_collection(len(vectors[0]))
             sparse_vectors = list(
                 self._sparse().embed([text for text, _ in records])
@@ -109,6 +114,8 @@ class Store:
                 ))
             for offset in range(0, len(points), 100):
                 self.client.upsert(self.collection, points[offset : offset + 100], wait=True)
+                if progress:
+                    progress("indexing", min(offset + 100, len(points)), len(points))
             self._delete_stale_source(source_id, version)
             total_chunks += len(records)
             indexed_files += 1
@@ -216,6 +223,17 @@ class Store:
             }
             for point in result.points
         ]
+
+    def top_dense_score(self, vector: list[float]) -> float:
+        self._validate_collection(len(vector))
+        result = self.client.query_points(
+            collection_name=self.collection,
+            query=vector,
+            using="dense",
+            limit=1,
+            with_payload=False,
+        )
+        return float(result.points[0].score) if result.points else 0.0
 
     def status(self) -> tuple[int, str]:
         if not self.client.collection_exists(self.collection):

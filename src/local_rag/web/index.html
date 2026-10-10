@@ -16,11 +16,20 @@
     .card { margin-top: 16px; padding: 18px; border: 1px solid #2b3543; border-radius: 10px; background: #151b24; }
     li { margin: 10px 0; color: #b9c5d4; } code { color: #8fc7ff; }
     #status { font-size: 13px; }
+    #upload-form { align-items: center; margin: 20px 0; }
+    #upload-form input { min-width: 0; }
+    progress { width: 100%; height: 12px; }
   </style>
 </head>
 <body>
   <h1>Local-RAG</h1>
   <div id="status" class="muted">Checking index…</div>
+  <form id="upload-form">
+    <input id="file" type="file" required aria-label="Document to upload">
+    <button id="upload">Upload & index</button>
+  </form>
+  <div id="upload-status" class="muted" role="status"></div>
+  <progress id="upload-progress" hidden></progress>
   <form id="form">
     <input id="question" autocomplete="off" placeholder="Ask about your indexed documents…" required>
     <button id="submit">Ask</button>
@@ -44,10 +53,35 @@
         if (!response.ok) throw new Error(data.error || 'Request failed');
         $('answer').textContent = data.answer;
         for (const source of data.sources) {
-          const item = document.createElement('li'); item.textContent = `${source.source} · ${source.locator} · chunk ${source.chunk}`; $('sources').append(item);
+          const item = document.createElement('li'); item.textContent = `${source.source.split(/[\\/]/).pop()} · ${source.locator} · chunk ${source.chunk}`; $('sources').append(item);
         }
       } catch (error) { $('answer').textContent = error.message; }
       finally { $('submit').disabled = false; }
+    });
+    $('upload-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const file = $('file').files[0];
+      if (!file) return;
+      $('upload').disabled = true;
+      $('upload-status').textContent = `Uploading ${file.name}…`;
+      $('upload-progress').hidden = false;
+      $('upload-progress').removeAttribute('value');
+      try {
+        const response = await fetch(`/api/uploads?filename=${encodeURIComponent(file.name)}`, {
+          method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: file
+        });
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || 'Upload failed');
+        for (;;) {
+          const state = await fetch(`/api/jobs/${job.id}`).then(r => r.json());
+          if (state.stage === 'error') throw new Error(state.error);
+          $('upload-status').textContent = `${state.filename}: ${state.stage}${state.total ? ` ${state.done}/${state.total} chunks` : ''}`;
+          if (state.total) { $('upload-progress').max = state.total; $('upload-progress').value = state.done; }
+          if (state.stage === 'done') { await status(); break; }
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (error) { $('upload-status').textContent = error.message; }
+      finally { $('upload').disabled = false; $('upload-progress').hidden = true; }
     });
     status();
   </script>

@@ -15,6 +15,8 @@ Ollama model or any OpenAI-compatible API.
 - incremental folder sync using SHA-256 file hashes
 - retrieval evaluation across dense, hybrid, and reranked profiles
 - local REST API and browser chat UI
+- browser uploads with background indexing progress
+- configurable refusal threshold when retrieval evidence is weak
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
 - source and page/slide citations in every answer
@@ -123,7 +125,18 @@ local-rag serve
 open http://127.0.0.1:8000
 ```
 
-The API exposes `GET /api/status`, `POST /api/search`, and `POST /api/ask`.
+Upload a supported file (up to 25 MiB) in the browser. Its progress is shown
+while text is extracted, embedded, and indexed; uploaded files are kept under
+`.localrag/uploads/` so citations still point to the source. A failed upload
+is removed. The API exposes `GET /api/status`, `POST /api/search`, `POST /api/ask`,
+`POST /api/uploads?filename=notes.pdf` (raw `application/octet-stream`), and
+`GET /api/jobs/{id}` for upload progress.
+
+`/api/ask` refuses to call the chat model when the nearest dense cosine score is
+below `min_score` (default `0.50`, set it in the JSON request body). The returned
+`retrieval_score` is a similarity heuristic, not a calibrated probability of
+answer correctness. Tune the threshold against your own evaluation set.
+
 The server binds to `127.0.0.1` by default; set `LOCAL_RAG_HOST` only when you
 intentionally want to expose it on another interface.
 

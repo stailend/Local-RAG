@@ -49,12 +49,15 @@ class StoreTest(unittest.TestCase):
                 QdrantClient(path=str(root / "qdrant")),
                 FakeSparse(),
             )
+            progress = []
             result = store.ingest(
-                knowledge, FakeProvider(), chunk_size=24, overlap=4
+                knowledge, FakeProvider(), chunk_size=24, overlap=4,
+                progress=lambda stage, done, total: progress.append((stage, done, total)),
             )
 
             self.assertEqual(result.files, 1)
             self.assertGreaterEqual(result.chunks, 2)
+            self.assertEqual(progress[-1], ("indexing", result.chunks, result.chunks))
             matches = store.search("cats", [1.0, 0.0, 0.1], limit=1)
             self.assertIn("Cats", matches[0]["text"])
             explained = store.search(

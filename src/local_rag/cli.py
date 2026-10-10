@@ -266,7 +266,7 @@ def run(args: argparse.Namespace) -> None:
     elif args.command == "serve":
         from .api import serve
 
-        serve(settings, args.host, args.port)
+        serve(settings, args.host, args.port, store=store, provider=provider)
     elif args.command == "ingest":
         if not args.path.exists():
             raise ValueError(f"path does not exist: {args.path}")

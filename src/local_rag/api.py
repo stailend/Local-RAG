@@ -1,22 +1,37 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .cli import _merge_matches, _rerank
 from .config import Settings
+from .documents import SUPPORTED_EXTENSIONS
 from .providers import provider_from_settings
 from .store import Store
 
+MAX_UPLOAD = 25 * 1024 * 1024
+DEFAULT_MIN_SCORE = 0.50
+
 
 class RagService:
-    def __init__(self, settings: Settings, store: Store | None = None, provider=None):
+    def __init__(self, settings: Settings, store: Store | None = None, provider=None,
+                 upload_root: Path | None = None):
         self.settings = settings
         self.store = store or Store(settings.qdrant_url, settings.collection)
         self.provider = provider or provider_from_settings(settings)
+        self.upload_root = upload_root or Path(".localrag/uploads") / hashlib.sha256(
+            settings.collection.encode()
+        ).hexdigest()[:16]
+        self.jobs: dict[str, dict] = {}
+        self._jobs_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1)
 
     def status(self) -> dict[str, Any]:
         points, state = self.store.status()
@@ -34,13 +49,14 @@ class RagService:
         candidates: int = 20,
         rerank: bool = True,
         rerank_model: str = "ms-marco-TinyBERT-L-2-v2",
+        vector: list[float] | None = None,
     ) -> list[dict]:
         question = question.strip()
         if not question:
             raise ValueError("question is required")
         if top_k < 1 or candidates < top_k:
             raise ValueError("candidates must be greater than or equal to top_k >= 1")
-        vector = self.provider.embed([question])[0]
+        vector = vector if vector is not None else self.provider.embed([question])[0]
         matches = self.store.search(question, vector, candidates)
         if rerank:
             matches = _rerank(question, matches, top_k, rerank_model)
@@ -48,21 +64,78 @@ class RagService:
             matches = matches[:top_k]
         return [_public_match(match) for match in matches]
 
-    def ask(self, question: str, **options) -> dict[str, Any]:
-        matches = _merge_matches(self.search(question, **options))
+    def ask(self, question: str, min_score: float = DEFAULT_MIN_SCORE, **options) -> dict[str, Any]:
+        if not 0 <= min_score <= 1:
+            raise ValueError("min_score must be between 0 and 1")
+        if not question.strip():
+            raise ValueError("question is required")
+        vector = self.provider.embed([question])[0]
+        score = self.store.top_dense_score(vector)
+        if score < min_score:
+            return {"answer": "Insufficient evidence in indexed documents.", "sources": [], "retrieval_score": score}
+        matches = _merge_matches(self.search(question, vector=vector, **options))
         if not matches:
-            return {"answer": "No indexed context found.", "sources": []}
+            return {"answer": "Insufficient evidence in indexed documents.", "sources": [], "retrieval_score": score}
         context = "\n\n".join(
             f"[{number}] {item['source']} ({item['locator']})\n{item['text']}"
             for number, item in enumerate(matches, 1)
         )
         return {
             "answer": self.provider.answer(question, context),
+            "retrieval_score": score,
             "sources": [
                 {key: item[key] for key in ("source", "locator", "chunk")}
                 for item in matches
             ],
         }
+
+    def upload(self, filename: str, data: bytes) -> dict:
+        if not filename or filename != Path(filename).name or "\\" in filename or "\x00" in filename:
+            raise ValueError("invalid filename")
+        if Path(filename).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError("unsupported file type")
+        if not data or len(data) > MAX_UPLOAD:
+            raise ValueError("file must be between 1 byte and 25 MiB")
+        self.upload_root.mkdir(parents=True, exist_ok=True)
+        job_id = uuid.uuid4().hex
+        target = self.upload_root / f"{job_id}-{filename}"
+        try:
+            with target.open("xb") as stream:
+                stream.write(data)
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
+        job = {"id": job_id, "filename": filename, "stage": "queued", "done": 0, "total": 0}
+        with self._jobs_lock:
+            self.jobs[job_id] = job
+        self._executor.submit(self._ingest_upload, job_id, target)
+        return dict(job)
+
+    def job(self, job_id: str) -> dict | None:
+        with self._jobs_lock:
+            current = self.jobs.get(job_id)
+            return dict(current) if current else None
+
+    def _update_job(self, job_id: str, stage: str, done: int = 0, total: int = 0,
+                    error: str | None = None) -> None:
+        with self._jobs_lock:
+            self.jobs[job_id].update(stage=stage, done=done, total=total)
+            if error:
+                self.jobs[job_id]["error"] = error
+
+    def _ingest_upload(self, job_id: str, target: Path) -> None:
+        try:
+            self._update_job(job_id, "extracting")
+            result = self.store.ingest(
+                target, self.provider, 1200, 200,
+                progress=lambda stage, done, total: self._update_job(job_id, stage, done, total),
+            )
+            if result.skipped:
+                raise ValueError("no extractable text found")
+            self._update_job(job_id, "done", result.chunks, result.chunks)
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            self._update_job(job_id, "error", error=str(exc))
 
 
 def _public_match(match: dict) -> dict:
@@ -83,15 +156,28 @@ class _Handler(BaseHTTPRequestHandler):
             self._file("index.html", "text/html; charset=utf-8")
         elif path == "/api/status":
             self._json(self.service.status())
+        elif path.startswith("/api/jobs/"):
+            job = self.service.job(path.removeprefix("/api/jobs/"))
+            self._json(job if job else {"error": "job not found"}, 200 if job else 404)
         else:
             self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
-        path = urlparse(self.path).path
-        if path not in {"/api/search", "/api/ask"}:
+        url = urlparse(self.path)
+        path = url.path
+        if path not in {"/api/search", "/api/ask", "/api/uploads"}:
             self._json({"error": "not found"}, 404)
             return
         try:
+            if path == "/api/uploads":
+                name = parse_qs(url.query).get("filename", [""])[0]
+                if self.headers.get("Content-Type") != "application/octet-stream":
+                    raise ValueError("upload requires application/octet-stream")
+                length = int(self.headers.get("Content-Length", 0))
+                if length < 1 or length > MAX_UPLOAD:
+                    raise ValueError("file must be between 1 byte and 25 MiB")
+                self._json(self.service.upload(name, self.rfile.read(length)), 202)
+                return
             payload = self._body()
             options = {
                 "top_k": int(payload.get("top_k", 5)),
@@ -102,7 +188,11 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/search":
                 result = {"matches": self.service.search(str(payload.get("question", "")), **options)}
             else:
-                result = self.service.ask(str(payload.get("question", "")), **options)
+                result = self.service.ask(
+                    str(payload.get("question", "")),
+                    min_score=float(payload.get("min_score", DEFAULT_MIN_SCORE)),
+                    **options,
+                )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, 400)
         except Exception as exc:  # keep provider/database details out of tracebacks
@@ -115,7 +205,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
-        if length > 1_000_000:
+        if length < 0 or length > 1_000_000:
             raise ValueError("request body is too large")
         value = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(value, dict):
@@ -143,8 +233,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8000) -> None:
-    service = RagService(settings)
+def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8000,
+          store: Store | None = None, provider=None) -> None:
+    service = RagService(settings, store, provider)
     handler = type("RagHandler", (_Handler,), {"service": service})
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Local-RAG UI: http://{host}:{port}")
@@ -154,3 +245,4 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8000) -> None
         pass
     finally:
         server.server_close()
+        service._executor.shutdown(wait=True)
