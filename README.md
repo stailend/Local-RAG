@@ -259,6 +259,34 @@ useful aggregation strategy here. At this small scale Python overhead erased
 the latency win, so this is a candidate for much larger collections—not a
 replacement for Qdrant's HNSW index yet.
 
+## Refusal-threshold benchmark
+
+Test whether the dense-cosine `min_score` gate can distinguish questions that
+have answers in the retrieved text from questions that do not:
+
+```bash
+PYTHONPATH=src python -m experiments.abstention_benchmark
+```
+
+The script downloads the [SQuAD 2.0 dev set](https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json),
+samples 100 paragraphs with one answerable and one unanswerable question each,
+and embeds them with the local Ollama `nomic-embed-text` model. It uses 50
+paragraphs to choose the lowest threshold with at most 10% false accepts, then
+evaluates on the other 50. Data and embeddings are cached in
+`.localrag/benchmarks/`.
+
+| Holdout threshold | Answerable accepted | Unanswerable accepted | Balanced accuracy |
+| --- | ---: | ---: | ---: |
+| Default `0.50` | 100% | 100% | 50% |
+| Calibrated `0.79` | 38% | 26% | 56% |
+
+The calibration split had 10% false accepts at `0.79`, but the holdout had
+26%. A similarity threshold alone is unreliable for these hard, in-topic
+unanswerable questions: raising it also refuses 62% of answerable ones. This
+benchmarks the retrieval refusal gate, **not** LLM answer correctness or the
+full RAG pipeline. Keep `min_score` configurable and evaluate it on documents
+and questions representative of your own use case.
+
 ## Privacy model
 
 With the default Ollama provider, document text and questions stay on the local
