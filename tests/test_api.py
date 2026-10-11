@@ -27,14 +27,17 @@ class FakeStore:
     def status(self):
         return 2, "green"
 
-    def search(self, question, vector, limit):
+    def search(self, question, vector, limit, source=None, folder=None):
         return [{
             "source": "notes.md", "locator": "page 1", "chunk": 0,
             "text": "The answer is here.", "_fused_score": 0.9,
         }][:limit]
 
-    def top_dense_score(self, vector):
+    def top_dense_score(self, vector, source=None, folder=None):
         return self.score
+
+    def sources(self):
+        return ["/docs/notes.md"]
 
     def ingest(self, path, provider, chunk_size, overlap, progress=None):
         progress("embedding", 1, 2)
@@ -54,6 +57,7 @@ class ApiTest(unittest.TestCase):
 
     def test_status_and_ask(self):
         self.assertEqual(self.service.status()["points"], 2)
+        self.assertEqual(self.service.sources()["folders"][0], "/docs")
         result = self.service.ask("What?")
         self.assertEqual(result["answer"], "answer: What?")
         self.assertEqual(result["sources"][0]["source"], "notes.md")

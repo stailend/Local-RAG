@@ -16,6 +16,8 @@
     .card { margin-top: 16px; padding: 18px; border: 1px solid #2b3543; border-radius: 10px; background: #151b24; }
     li { margin: 10px 0; color: #b9c5d4; } code { color: #8fc7ff; }
     #status { font-size: 13px; }
+    .filters { display: flex; gap: 10px; margin-top: -14px; }
+    .filters input { width: 50%; }
     #upload-form { align-items: center; margin: 20px 0; }
     #upload-form input { min-width: 0; }
     progress { width: 100%; height: 12px; }
@@ -34,6 +36,12 @@
     <input id="question" autocomplete="off" placeholder="Ask about your indexed documents…" required>
     <button id="submit">Ask</button>
   </form>
+  <div class="filters">
+    <input id="source" list="source-options" placeholder="Optional: file path" aria-label="Filter by file">
+    <datalist id="source-options"></datalist>
+    <input id="folder" list="folder-options" placeholder="Optional: folder path" aria-label="Filter by folder">
+    <datalist id="folder-options"></datalist>
+  </div>
   <section class="card"><div id="answer" class="muted">Your answer will appear here.</div></section>
   <section class="card"><strong>Sources</strong><ul id="sources"></ul></section>
   <script>
@@ -44,11 +52,19 @@
         $('status').textContent = `${data.points} chunks · ${data.collection} · ${data.provider}`;
       } catch (error) { $('status').textContent = 'Index unavailable'; }
     }
+    async function loadSources() {
+      const data = await fetch('/api/sources').then(r => r.json());
+      for (const [field, values] of [['source-options', data.sources], ['folder-options', data.folders]]) {
+        $(field).replaceChildren(...values.map(value => {
+          const option = document.createElement('option'); option.value = value; return option;
+        }));
+      }
+    }
     $('form').addEventListener('submit', async event => {
       event.preventDefault();
       $('submit').disabled = true; $('answer').textContent = 'Thinking…'; $('sources').textContent = '';
       try {
-        const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value}) });
+        const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value, source: $('source').value, folder: $('folder').value}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Request failed');
         $('answer').textContent = data.answer;
@@ -77,13 +93,13 @@
           if (state.stage === 'error') throw new Error(state.error);
           $('upload-status').textContent = `${state.filename}: ${state.stage}${state.total ? ` ${state.done}/${state.total} chunks` : ''}`;
           if (state.total) { $('upload-progress').max = state.total; $('upload-progress').value = state.done; }
-          if (state.stage === 'done') { await status(); break; }
+          if (state.stage === 'done') { await status(); await loadSources(); break; }
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (error) { $('upload-status').textContent = error.message; }
       finally { $('upload').disabled = false; $('upload-progress').hidden = true; }
     });
-    status();
+    status(); loadSources();
   </script>
 </body>
 </html>

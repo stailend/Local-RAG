@@ -42,6 +42,14 @@ class RagService:
             "provider": self.settings.provider,
         }
 
+    def sources(self) -> dict[str, list[str]]:
+        sources = self.store.sources()
+        return {
+            "sources": sources,
+            "folders": sorted({str(parent) for source in sources
+                               for parent in Path(source).parents if parent != parent.parent}),
+        }
+
     def search(
         self,
         question: str,
@@ -50,6 +58,8 @@ class RagService:
         rerank: bool = True,
         rerank_model: str = "ms-marco-TinyBERT-L-2-v2",
         vector: list[float] | None = None,
+        source: str | None = None,
+        folder: str | None = None,
     ) -> list[dict]:
         question = question.strip()
         if not question:
@@ -57,7 +67,7 @@ class RagService:
         if top_k < 1 or candidates < top_k:
             raise ValueError("candidates must be greater than or equal to top_k >= 1")
         vector = vector if vector is not None else self.provider.embed([question])[0]
-        matches = self.store.search(question, vector, candidates)
+        matches = self.store.search(question, vector, candidates, source=source, folder=folder)
         if rerank:
             matches = _rerank(question, matches, top_k, rerank_model)
         else:
@@ -70,7 +80,9 @@ class RagService:
         if not question.strip():
             raise ValueError("question is required")
         vector = self.provider.embed([question])[0]
-        score = self.store.top_dense_score(vector)
+        score = self.store.top_dense_score(
+            vector, source=options.get("source"), folder=options.get("folder")
+        )
         if score < min_score:
             return {"answer": "Insufficient evidence in indexed documents.", "sources": [], "retrieval_score": score}
         matches = _merge_matches(self.search(question, vector=vector, **options))
@@ -156,6 +168,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._file("index.html", "text/html; charset=utf-8")
         elif path == "/api/status":
             self._json(self.service.status())
+        elif path == "/api/sources":
+            self._json(self.service.sources())
         elif path.startswith("/api/jobs/"):
             job = self.service.job(path.removeprefix("/api/jobs/"))
             self._json(job if job else {"error": "job not found"}, 200 if job else 404)
@@ -184,6 +198,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "candidates": int(payload.get("candidates", 20)),
                 "rerank": bool(payload.get("rerank", True)),
                 "rerank_model": str(payload.get("rerank_model", "ms-marco-TinyBERT-L-2-v2")),
+                "source": str(payload["source"]).strip() if payload.get("source") else None,
+                "folder": str(payload["folder"]).strip() if payload.get("folder") else None,
             }
             if path == "/api/search":
                 result = {"matches": self.service.search(str(payload.get("question", "")), **options)}

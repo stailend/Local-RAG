@@ -35,6 +35,27 @@ class FailingProvider:
 
 
 class StoreTest(unittest.TestCase):
+    def test_filters_dense_hybrid_and_confidence_by_file_and_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            nested = docs / "nested"
+            nested.mkdir(parents=True)
+            cats = docs / "cats.md"
+            dogs = nested / "dogs.md"
+            cats.write_text("Cats sleep in warm places.", encoding="utf-8")
+            dogs.write_text("Dogs enjoy long walks.", encoding="utf-8")
+            store = Store("", "filters", QdrantClient(path=str(root / "qdrant")), FakeSparse())
+            store.ingest(docs, FakeProvider(), chunk_size=1000, overlap=100)
+
+            self.assertEqual(store.sources(), sorted([str(cats.resolve()), str(dogs.resolve())]))
+            for mode in ("dense", "hybrid"):
+                matches = store.search("cats", [1.0, 0.0, 0.1], 5, mode=mode, source=str(dogs))
+                self.assertEqual([item["source"] for item in matches], [str(dogs.resolve())])
+                matches = store.search("cats", [1.0, 0.0, 0.1], 5, mode=mode, folder=str(docs))
+                self.assertEqual({item["source"] for item in matches}, {str(cats.resolve()), str(dogs.resolve())})
+            self.assertEqual(store.top_dense_score([1.0, 0.0, 0.1], source=str(root / "missing.md")), 0.0)
+
     def test_ingest_and_search(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

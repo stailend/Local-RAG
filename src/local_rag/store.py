@@ -68,6 +68,10 @@ class Store:
                         records.append((text, {
                             **(extra_payload or {}),
                             "source": source,
+                            "source_dirs": [
+                                str(parent) for parent in path.resolve().parents
+                                if parent != parent.parent
+                            ],
                             "source_id": source_id,
                             "locator": section.locator,
                             "chunk": index,
@@ -175,8 +179,11 @@ class Store:
         explain: bool = False,
         mode: str = "hybrid",
         candidates: int | None = None,
+        source: str | None = None,
+        folder: str | None = None,
     ) -> list[dict]:
         self._validate_collection(len(vector))
+        query_filter = self._source_filter(source, folder)
         sparse_query = None
         if mode == "dense":
             result = self.client.query_points(
@@ -185,6 +192,7 @@ class Store:
                 using="dense",
                 limit=limit,
                 with_payload=True,
+                query_filter=query_filter,
             )
         elif mode == "hybrid":
             sparse = next(iter(self._sparse().query_embed(text)))
@@ -196,24 +204,27 @@ class Store:
                 collection_name=self.collection,
                 prefetch=[
                     models.Prefetch(
-                        query=vector, using="dense", limit=prefetch_limit
+                        query=vector, using="dense", limit=prefetch_limit,
+                        filter=query_filter,
                     ),
                     models.Prefetch(
-                        query=sparse_query, using="bm25", limit=prefetch_limit
+                        query=sparse_query, using="bm25", limit=prefetch_limit,
+                        filter=query_filter,
                     ),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 limit=limit,
                 with_payload=True,
+                query_filter=query_filter,
             )
         else:
             raise ValueError("search mode must be 'dense' or 'hybrid'")
         dense_ranks: dict[Any, int] = {}
         sparse_ranks: dict[Any, int] = {}
         if explain:
-            dense_ranks = self._ranks(vector, "dense", limit)
+            dense_ranks = self._ranks(vector, "dense", limit, query_filter)
             if sparse_query is not None:
-                sparse_ranks = self._ranks(sparse_query, "bm25", limit)
+                sparse_ranks = self._ranks(sparse_query, "bm25", limit, query_filter)
         return [
             {
                 **(point.payload or {}),
@@ -224,7 +235,9 @@ class Store:
             for point in result.points
         ]
 
-    def top_dense_score(self, vector: list[float]) -> float:
+    def top_dense_score(
+        self, vector: list[float], source: str | None = None, folder: str | None = None
+    ) -> float:
         self._validate_collection(len(vector))
         result = self.client.query_points(
             collection_name=self.collection,
@@ -232,8 +245,39 @@ class Store:
             using="dense",
             limit=1,
             with_payload=False,
+            query_filter=self._source_filter(source, folder),
         )
         return float(result.points[0].score) if result.points else 0.0
+
+    def sources(self) -> list[str]:
+        if not self.client.collection_exists(self.collection):
+            return []
+        result: set[str] = set()
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection,
+                limit=256,
+                offset=offset,
+                with_payload=["source"],
+                with_vectors=False,
+            )
+            result.update(str(point.payload["source"]) for point in points if point.payload and point.payload.get("source"))
+            if offset is None:
+                return sorted(result)
+
+    @staticmethod
+    def _source_filter(source: str | None, folder: str | None):
+        conditions = []
+        if source:
+            conditions.append(models.FieldCondition(
+                key="source", match=models.MatchValue(value=str(Path(source).expanduser().resolve()))
+            ))
+        if folder:
+            conditions.append(models.FieldCondition(
+                key="source_dirs", match=models.MatchValue(value=str(Path(folder).expanduser().resolve()))
+            ))
+        return models.Filter(must=conditions) if conditions else None
 
     def status(self) -> tuple[int, str]:
         if not self.client.collection_exists(self.collection):
@@ -260,6 +304,13 @@ class Store:
                 "bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)
             },
         )
+        for field in ("source", "source_dirs"):
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name=field,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
 
     def _sparse(self):
         if self._sparse_encoder is None:
@@ -287,13 +338,14 @@ class Store:
         if params.vectors["dense"].size != vector_size:
             raise ValueError("embedding size does not match the existing collection")
 
-    def _ranks(self, query, using: str, limit: int) -> dict[Any, int]:
+    def _ranks(self, query, using: str, limit: int, query_filter=None) -> dict[Any, int]:
         result = self.client.query_points(
             collection_name=self.collection,
             query=query,
             using=using,
             limit=limit,
             with_payload=False,
+            query_filter=query_filter,
         )
         return {point.id: rank for rank, point in enumerate(result.points, 1)}
 

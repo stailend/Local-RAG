@@ -44,6 +44,8 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--top-k", type=int, default=5)
         command.add_argument("--candidates", type=int, default=20)
         command.add_argument("--no-rerank", action="store_true")
+        command.add_argument("--source", help="search only this file")
+        command.add_argument("--folder", help="search this folder and its subfolders")
         command.add_argument(
             "--rerank-model",
             default=os.getenv("LOCAL_RAG_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2"),
@@ -156,6 +158,8 @@ def _retrieve(question: str, args, store: Store, provider) -> list[dict]:
         vector,
         args.candidates,
         args.command == "search" and args.explain,
+        source=args.source,
+        folder=args.folder,
     )
     if not args.no_rerank:
         matches = _rerank(

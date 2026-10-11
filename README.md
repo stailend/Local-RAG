@@ -16,6 +16,7 @@ Ollama model or any OpenAI-compatible API.
 - retrieval evaluation across dense, hybrid, and reranked profiles
 - local REST API and browser chat UI
 - browser uploads with background indexing progress
+- file and recursive folder filters for search and answers
 - configurable refusal threshold when retrieval evidence is weak
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
@@ -139,6 +140,21 @@ answer correctness. Tune the threshold against your own evaluation set.
 
 The server binds to `127.0.0.1` by default; set `LOCAL_RAG_HOST` only when you
 intentionally want to expose it on another interface.
+
+## Search within one file or folder
+
+Choose a file or folder in the browser, or pass a path to the CLI:
+
+```bash
+local-rag ask "When does the expedition start?" --source ./knowledge/project.md
+local-rag search "observations" --folder ./knowledge/reports
+```
+
+`POST /api/ask` and `POST /api/search` accept `source` and `folder` fields;
+`GET /api/sources` lists available paths. Both filters are combined when set.
+The refusal score is calculated inside the same filtered subset. Files indexed
+before version 0.6.0 need re-ingestion to gain recursive folder metadata;
+exact file filters also work with older collections.
 
 If Docker is unavailable, use Qdrant's persistent embedded mode instead:
 
