@@ -5,6 +5,7 @@ from pathlib import Path
 from qdrant_client import QdrantClient
 
 from local_rag.store import Store
+from local_rag.library import cluster_sources, clusters, summarize_files
 
 
 class SparseVector:
@@ -28,6 +29,9 @@ class FakeProvider:
             for text in texts
         ]
 
+    def summarize(self, text: str) -> str:
+        return text[:150]
+
 
 class FailingProvider:
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -35,6 +39,41 @@ class FailingProvider:
 
 
 class StoreTest(unittest.TestCase):
+    def test_file_summaries_groups_and_sync_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            docs.mkdir()
+            cats = docs / "cats.md"
+            kittens = docs / "kittens.md"
+            dogs = docs / "dogs.md"
+            cats.write_text("Cats are quiet pets.", encoding="utf-8")
+            kittens.write_text("Cats like warm places.", encoding="utf-8")
+            dogs.write_text("Dogs enjoy walks.", encoding="utf-8")
+            provider = FakeProvider()
+            store = Store("", "library", QdrantClient(path=str(root / "qdrant")), FakeSparse())
+            store.sync(docs, provider, 1000, 100)
+            self.assertEqual(summarize_files(store, provider), {"created": 3, "unchanged": 0})
+            self.assertEqual(summarize_files(store, provider), {"created": 0, "unchanged": 3})
+            store.ingest(cats, provider, 1000, 100)
+            self.assertEqual(len(store.file_summaries()), 3)
+            groups = clusters(store)
+            self.assertEqual(sorted(len(group["files"]) for group in groups), [1, 2])
+            cat_group = next(group for group in groups if len(group["files"]) == 2)
+            sources = cluster_sources(store, cat_group["id"])
+            self.assertEqual(set(sources), {str(cats.resolve()), str(kittens.resolve())})
+            matches = store.search("cats", [1, 0, .1], 5, sources=sources)
+            self.assertEqual({item["source"] for item in matches}, set(sources))
+
+            cats.write_text("Dogs and walks.", encoding="utf-8")
+            kittens.unlink()
+            store.sync(docs, provider, 1000, 100)
+            self.assertEqual([row["source"] for row in store.file_summaries()], [str(dogs.resolve())])
+            self.assertEqual(summarize_files(store, provider), {"created": 1, "unchanged": 1})
+            self.assertEqual(len(store.file_summaries()), 2)
+            store.delete()
+            self.assertEqual(store.file_summaries(), [])
+
     def test_filters_dense_hybrid_and_confidence_by_file_and_folder(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from .cli import _merge_matches, _rerank
 from .config import Settings
 from .documents import SUPPORTED_EXTENSIONS
+from .library import cluster_sources, clusters, summarize_files
 from .providers import provider_from_settings
 from .store import Store
 
@@ -50,6 +51,9 @@ class RagService:
                                for parent in Path(source).parents if parent != parent.parent}),
         }
 
+    def clusters(self) -> dict[str, list[dict]]:
+        return {"clusters": clusters(self.store, self.provider)}
+
     def search(
         self,
         question: str,
@@ -60,6 +64,7 @@ class RagService:
         vector: list[float] | None = None,
         source: str | None = None,
         folder: str | None = None,
+        cluster: str | None = None,
     ) -> list[dict]:
         question = question.strip()
         if not question:
@@ -67,7 +72,8 @@ class RagService:
         if top_k < 1 or candidates < top_k:
             raise ValueError("candidates must be greater than or equal to top_k >= 1")
         vector = vector if vector is not None else self.provider.embed([question])[0]
-        matches = self.store.search(question, vector, candidates, source=source, folder=folder)
+        sources = cluster_sources(self.store, cluster) if cluster else None
+        matches = self.store.search(question, vector, candidates, source=source, folder=folder, sources=sources)
         if rerank:
             matches = _rerank(question, matches, top_k, rerank_model)
         else:
@@ -80,8 +86,9 @@ class RagService:
         if not question.strip():
             raise ValueError("question is required")
         vector = self.provider.embed([question])[0]
+        sources = cluster_sources(self.store, options["cluster"]) if options.get("cluster") else None
         score = self.store.top_dense_score(
-            vector, source=options.get("source"), folder=options.get("folder")
+            vector, source=options.get("source"), folder=options.get("folder"), sources=sources
         )
         if score < min_score:
             return {"answer": "Insufficient evidence in indexed documents.", "sources": [], "retrieval_score": score}
@@ -123,6 +130,14 @@ class RagService:
         self._executor.submit(self._ingest_upload, job_id, target)
         return dict(job)
 
+    def summarize(self) -> dict:
+        job_id = uuid.uuid4().hex
+        job = {"id": job_id, "filename": "indexed files", "stage": "queued", "done": 0, "total": 0}
+        with self._jobs_lock:
+            self.jobs[job_id] = job
+        self._executor.submit(self._summarize_library, job_id)
+        return dict(job)
+
     def job(self, job_id: str) -> dict | None:
         with self._jobs_lock:
             current = self.jobs.get(job_id)
@@ -149,6 +164,18 @@ class RagService:
             target.unlink(missing_ok=True)
             self._update_job(job_id, "error", error=str(exc))
 
+    def _summarize_library(self, job_id: str) -> None:
+        try:
+            self._update_job(job_id, "summarizing")
+            result = summarize_files(
+                self.store, self.provider,
+                progress=lambda done, total: self._update_job(job_id, "summarizing", done, total),
+            )
+            total = result["created"] + result["unchanged"]
+            self._update_job(job_id, "done", total, total)
+        except Exception as exc:
+            self._update_job(job_id, "error", error=str(exc))
+
 
 def _public_match(match: dict) -> dict:
     return {
@@ -170,6 +197,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self.service.status())
         elif path == "/api/sources":
             self._json(self.service.sources())
+        elif path == "/api/clusters":
+            try:
+                self._json(self.service.clusters())
+            except Exception as exc:
+                self._json({"error": str(exc)}, 502)
         elif path.startswith("/api/jobs/"):
             job = self.service.job(path.removeprefix("/api/jobs/"))
             self._json(job if job else {"error": "job not found"}, 200 if job else 404)
@@ -179,10 +211,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         url = urlparse(self.path)
         path = url.path
-        if path not in {"/api/search", "/api/ask", "/api/uploads"}:
+        if path not in {"/api/search", "/api/ask", "/api/uploads", "/api/summarize"}:
             self._json({"error": "not found"}, 404)
             return
         try:
+            if path == "/api/summarize":
+                self._json(self.service.summarize(), 202)
+                return
             if path == "/api/uploads":
                 name = parse_qs(url.query).get("filename", [""])[0]
                 if self.headers.get("Content-Type") != "application/octet-stream":
@@ -200,6 +235,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "rerank_model": str(payload.get("rerank_model", "ms-marco-TinyBERT-L-2-v2")),
                 "source": str(payload["source"]).strip() if payload.get("source") else None,
                 "folder": str(payload["folder"]).strip() if payload.get("folder") else None,
+                "cluster": str(payload["cluster"]).strip() if payload.get("cluster") else None,
             }
             if path == "/api/search":
                 result = {"matches": self.service.search(str(payload.get("question", "")), **options)}

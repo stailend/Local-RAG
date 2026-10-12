@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,7 +64,7 @@ class Store:
                 source = str(path.resolve())
                 source_id = hashlib.sha256(source.encode()).hexdigest()
                 records: list[tuple[str, dict]] = []
-                for section in extract(path):
+                for section_number, section in enumerate(extract(path)):
                     for index, text in enumerate(chunks(section.text, chunk_size, overlap)):
                         records.append((text, {
                             **(extra_payload or {}),
@@ -74,6 +75,7 @@ class Store:
                             ],
                             "source_id": source_id,
                             "locator": section.locator,
+                            "section": section_number,
                             "chunk": index,
                         }))
             except (OSError, RuntimeError, ValueError) as exc:
@@ -121,6 +123,7 @@ class Store:
                 if progress:
                     progress("indexing", min(offset + 100, len(points)), len(points))
             self._delete_stale_source(source_id, version)
+            self._delete_stale_summary(source_id, version)
             total_chunks += len(records)
             indexed_files += 1
         return IngestResult(indexed_files, total_chunks, skipped)
@@ -181,9 +184,10 @@ class Store:
         candidates: int | None = None,
         source: str | None = None,
         folder: str | None = None,
+        sources: list[str] | None = None,
     ) -> list[dict]:
         self._validate_collection(len(vector))
-        query_filter = self._source_filter(source, folder)
+        query_filter = self._source_filter(source, folder, sources)
         sparse_query = None
         if mode == "dense":
             result = self.client.query_points(
@@ -236,7 +240,8 @@ class Store:
         ]
 
     def top_dense_score(
-        self, vector: list[float], source: str | None = None, folder: str | None = None
+        self, vector: list[float], source: str | None = None, folder: str | None = None,
+        sources: list[str] | None = None,
     ) -> float:
         self._validate_collection(len(vector))
         result = self.client.query_points(
@@ -245,7 +250,7 @@ class Store:
             using="dense",
             limit=1,
             with_payload=False,
-            query_filter=self._source_filter(source, folder),
+            query_filter=self._source_filter(source, folder, sources),
         )
         return float(result.points[0].score) if result.points else 0.0
 
@@ -266,8 +271,77 @@ class Store:
             if offset is None:
                 return sorted(result)
 
+    @property
+    def file_collection(self) -> str:
+        return f"{self.collection}__files"
+
+    def source_chunks(self, source: str | None = None) -> dict[str, dict]:
+        if not self.client.collection_exists(self.collection):
+            return {}
+        documents: dict[str, dict] = {}
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=self._source_filter(source, None),
+                limit=256,
+                offset=offset,
+                with_payload=["source", "source_id", "source_version", "locator", "section", "chunk", "text"],
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                name = payload.get("source")
+                if not name:
+                    continue
+                record = documents.setdefault(name, {
+                    "source": name,
+                    "source_id": payload["source_id"],
+                    "source_version": payload["source_version"],
+                    "chunks": [],
+                })
+                record["chunks"].append(payload)
+            if offset is None:
+                break
+        for record in documents.values():
+            record["chunks"].sort(key=lambda item: (
+                item.get("section", int((re.search(r"\d+", item.get("locator", "")) or [0])[0])),
+                item.get("chunk", 0),
+            ))
+        return documents
+
+    def file_summaries(self) -> list[dict]:
+        if not self.client.collection_exists(self.file_collection):
+            return []
+        rows = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.file_collection, limit=256, offset=offset,
+                with_payload=True, with_vectors=True,
+            )
+            for point in points:
+                rows.append({**(point.payload or {}), "vector": point.vector["dense"]})
+            if offset is None:
+                return sorted(rows, key=lambda item: item["source"])
+
+    def save_file_summary(self, document: dict, summary: str, vector: list[float]) -> None:
+        if not self.client.collection_exists(self.file_collection):
+            self.client.create_collection(
+                self.file_collection,
+                vectors_config={"dense": models.VectorParams(
+                    size=len(vector), distance=models.Distance.COSINE
+                )},
+            )
+        self.client.upsert(self.file_collection, points=[models.PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, document["source"])),
+            vector={"dense": vector},
+            payload={key: document[key] for key in ("source", "source_id", "source_version")} | {"summary": summary},
+        )], wait=True)
+
     @staticmethod
-    def _source_filter(source: str | None, folder: str | None):
+    def _source_filter(source: str | None, folder: str | None,
+                       sources: list[str] | None = None):
         conditions = []
         if source:
             conditions.append(models.FieldCondition(
@@ -276,6 +350,10 @@ class Store:
         if folder:
             conditions.append(models.FieldCondition(
                 key="source_dirs", match=models.MatchValue(value=str(Path(folder).expanduser().resolve()))
+            ))
+        if sources is not None:
+            conditions.append(models.FieldCondition(
+                key="source", match=models.MatchAny(any=sources)
             ))
         return models.Filter(must=conditions) if conditions else None
 
@@ -288,6 +366,8 @@ class Store:
     def delete(self) -> None:
         if self.client.collection_exists(self.collection):
             self.client.delete_collection(self.collection)
+        if self.client.collection_exists(self.file_collection):
+            self.client.delete_collection(self.file_collection)
 
     def _ensure_collection(self, vector_size: int) -> None:
         if self.client.collection_exists(self.collection):
@@ -404,6 +484,19 @@ class Store:
             ),
             wait=True,
         )
+        self._delete_stale_summary(source_id, None)
+
+    def _delete_stale_summary(self, source_id: str, version: str | None) -> None:
+        if not self.client.collection_exists(self.file_collection):
+            return
+        summary = self.client.scroll(
+            collection_name=self.file_collection,
+            scroll_filter=models.Filter(must=[models.FieldCondition(
+                key="source_id", match=models.MatchValue(value=source_id)
+            )]), limit=1, with_payload=["source_version"], with_vectors=False,
+        )[0]
+        if summary and summary[0].payload.get("source_version") != version:
+            self.client.delete(self.file_collection, [summary[0].id], wait=True)
 
     @staticmethod
     def _file_hash(path: Path) -> str:

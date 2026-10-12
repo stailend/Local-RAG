@@ -11,6 +11,7 @@ import httpx
 
 from .config import Settings
 from .evaluation import evaluate, load_cases
+from .library import cluster_sources, clusters, summarize_files
 from .providers import provider_from_settings
 from .store import Store
 
@@ -30,6 +31,9 @@ def parser() -> argparse.ArgumentParser:
     ingest.add_argument("path", type=Path)
     sync = commands.add_parser("sync", help="mirror a directory into the collection")
     sync.add_argument("path", type=Path)
+    summary = commands.add_parser("summarize", help="summarize indexed files")
+    summary.add_argument("--source", help="summarize only this file")
+    commands.add_parser("clusters", help="group summarized files by topic")
     for command in (ingest, sync):
         command.add_argument("--chunk-size", type=int, default=1200)
         command.add_argument("--overlap", type=int, default=200)
@@ -46,6 +50,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--no-rerank", action="store_true")
         command.add_argument("--source", help="search only this file")
         command.add_argument("--folder", help="search this folder and its subfolders")
+        command.add_argument("--cluster", help="search only a cluster listed by 'clusters'")
         command.add_argument(
             "--rerank-model",
             default=os.getenv("LOCAL_RAG_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2"),
@@ -153,6 +158,7 @@ def _rerank(
 
 def _retrieve(question: str, args, store: Store, provider) -> list[dict]:
     vector = provider.embed([question])[0]
+    sources = cluster_sources(store, args.cluster) if args.cluster else None
     matches = store.search(
         question,
         vector,
@@ -160,6 +166,7 @@ def _retrieve(question: str, args, store: Store, provider) -> list[dict]:
         args.command == "search" and args.explain,
         source=args.source,
         folder=args.folder,
+        sources=sources,
     )
     if not args.no_rerank:
         matches = _rerank(
@@ -285,6 +292,14 @@ def run(args: argparse.Namespace) -> None:
             f"deleted={result.deleted} unchanged={result.unchanged} "
             f"skipped={result.skipped} chunks={result.chunks}"
         )
+    elif args.command == "summarize":
+        result = summarize_files(store, provider, args.source)
+        print(f"summarized={result['created']} unchanged={result['unchanged']}")
+    elif args.command == "clusters":
+        for group in clusters(store, provider):
+            print(f"{group['id']}  {group['label']}  ({len(group['files'])} files)")
+            for file in group["files"]:
+                print(f"  {file['source']} — {file['summary']}")
     elif args.command == "ask":
         _answer(args.question, args, store, provider)
     elif args.command == "search":

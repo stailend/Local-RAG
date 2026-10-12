@@ -27,17 +27,25 @@ class FakeStore:
     def status(self):
         return 2, "green"
 
-    def search(self, question, vector, limit, source=None, folder=None):
+    def search(self, question, vector, limit, source=None, folder=None, sources=None):
         return [{
             "source": "notes.md", "locator": "page 1", "chunk": 0,
             "text": "The answer is here.", "_fused_score": 0.9,
         }][:limit]
 
-    def top_dense_score(self, vector, source=None, folder=None):
+    def top_dense_score(self, vector, source=None, folder=None, sources=None):
         return self.score
 
     def sources(self):
         return ["/docs/notes.md"]
+
+    def file_summaries(self):
+        return [{"source": "/docs/notes.md", "source_version": "v1",
+                 "summary": "Notes summary", "vector": [1.0, 0.0]}]
+
+    def source_chunks(self, source=None):
+        return {"/docs/notes.md": {"source": "/docs/notes.md", "source_version": "v1",
+                                   "chunks": [{"locator": "page 1", "text": "The answer is here."}]}}
 
     def ingest(self, path, provider, chunk_size, overlap, progress=None):
         progress("embedding", 1, 2)
@@ -61,6 +69,14 @@ class ApiTest(unittest.TestCase):
         result = self.service.ask("What?")
         self.assertEqual(result["answer"], "answer: What?")
         self.assertEqual(result["sources"][0]["source"], "notes.md")
+
+    def test_cluster_filters_question_and_lists_summary(self):
+        group = self.service.clusters()["clusters"][0]
+        self.assertEqual(group["files"][0]["summary"], "Notes summary")
+        result = self.service.ask("What?", cluster=group["id"])
+        self.assertIn("answer", result)
+        with self.assertRaises(ValueError):
+            self.service.ask("What?", cluster="missing")
 
     def test_rejects_empty_question(self):
         with self.assertRaises(ValueError):
@@ -97,6 +113,19 @@ class ApiTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
         connection = HTTPConnection("127.0.0.1", server.server_port)
         self.addCleanup(connection.close)
+        connection.request("GET", "/api/clusters")
+        groups = json.loads(connection.getresponse().read())["clusters"]
+        self.assertEqual(groups[0]["files"][0]["summary"], "Notes summary")
+        connection.request("POST", "/api/summarize")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 202)
+        summary_job_id = json.loads(response.read())["id"]
+        for _ in range(100):
+            summary_job = self.service.job(summary_job_id)
+            if summary_job["stage"] in {"done", "error"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual((summary_job["stage"], summary_job["total"]), ("done", 1))
         connection.request(
             "POST", "/api/uploads?filename=notes.md", b"The answer is here",
             {"Content-Type": "application/octet-stream"},
