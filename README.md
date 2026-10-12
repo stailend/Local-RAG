@@ -17,6 +17,7 @@ Ollama model or any OpenAI-compatible API.
 - local REST API and browser chat UI
 - browser uploads with background indexing progress
 - file and recursive folder filters for search and answers
+- file summaries and virtual topic groups with group-scoped questions
 - configurable refusal threshold when retrieval evidence is weak
 - local Ollama embeddings and generation by default
 - OpenAI-compatible remote endpoints when explicitly configured
@@ -155,6 +156,29 @@ local-rag search "observations" --folder ./knowledge/reports
 The refusal score is calculated inside the same filtered subset. Files indexed
 before version 0.6.0 need re-ingestion to gain recursive folder metadata;
 exact file filters also work with older collections.
+
+## File summaries and topic groups
+
+After indexing, generate a short summary and one embedding for each file:
+
+```bash
+local-rag summarize
+local-rag clusters
+local-rag ask "What do these files have in common?" --cluster GROUP_ID
+```
+
+`summarize` processes long files in stages, skips unchanged files, and accepts
+`--source PATH` for one file. `clusters` groups similar summary embeddings and
+prints a topic label, member files, and their summaries. In the browser, click
+**Generate / update summaries**, then **Explore document groups** to see the
+same view, select a group or file, and
+ask questions within it. Groups are virtual: original files are never moved.
+
+Run `summarize` again after `ingest` or `sync`. Changed and deleted files lose
+their old summaries automatically. Summaries live in a separate Qdrant
+collection named `<collection>__files` and are deleted with the parent
+collection. The grouping uses a fixed cosine-similarity heuristic (`0.72`),
+so check its labels and members before treating them as definitive categories.
 
 If Docker is unavailable, use Qdrant's persistent embedded mode instead:
 

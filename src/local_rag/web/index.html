@@ -21,6 +21,8 @@
     #upload-form { align-items: center; margin: 20px 0; }
     #upload-form input { min-width: 0; }
     progress { width: 100%; height: 12px; }
+    #groups button { margin: 4px 8px 4px 0; }
+    #groups p { margin: 6px 0 14px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -44,6 +46,13 @@
   </div>
   <section class="card"><div id="answer" class="muted">Your answer will appear here.</div></section>
   <section class="card"><strong>Sources</strong><ul id="sources"></ul></section>
+  <section class="card">
+    <button id="summarize" type="button">Generate / update summaries</button>
+    <button id="explore" type="button">Explore document groups</button>
+    <div id="summary-status" class="muted" role="status"></div>
+    <span id="active-cluster" class="muted"></span>
+    <div id="groups" aria-live="polite"></div>
+  </section>
   <script>
     const $ = id => document.getElementById(id);
     async function status() {
@@ -64,7 +73,7 @@
       event.preventDefault();
       $('submit').disabled = true; $('answer').textContent = 'Thinking…'; $('sources').textContent = '';
       try {
-        const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value, source: $('source').value, folder: $('folder').value}) });
+        const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value, source: $('source').value, folder: $('folder').value, cluster: $('active-cluster').dataset.id || ''}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Request failed');
         $('answer').textContent = data.answer;
@@ -98,6 +107,66 @@
         }
       } catch (error) { $('upload-status').textContent = error.message; }
       finally { $('upload').disabled = false; $('upload-progress').hidden = true; }
+    });
+    $('explore').addEventListener('click', async () => {
+      $('explore').disabled = true;
+      $('groups').textContent = 'Loading summaries and groups…';
+      try {
+        const response = await fetch('/api/clusters');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load groups');
+        $('groups').replaceChildren();
+        if (!data.clusters.length) $('groups').textContent = 'No summaries yet. Run local-rag summarize first.';
+        for (const group of data.clusters) {
+          const card = document.createElement('div'); card.className = 'card';
+          const pick = document.createElement('button');
+          pick.type = 'button'; pick.textContent = `${group.label} · ${group.files.length} files`;
+          pick.addEventListener('click', () => {
+            $('active-cluster').dataset.id = group.id;
+            $('active-cluster').textContent = `Searching group: ${group.label} (click to clear)`;
+            $('source').value = ''; $('folder').value = '';
+          });
+          card.append(pick);
+          for (const file of group.files) {
+            const item = document.createElement('p');
+            const select = document.createElement('button');
+            select.type = 'button'; select.textContent = file.source.split(/[\\/]/).pop();
+            select.addEventListener('click', () => {
+              $('source').value = file.source;
+              $('active-cluster').dataset.id = '';
+              $('active-cluster').textContent = '';
+            });
+            const summary = document.createElement('span');
+            summary.textContent = ` ${file.summary}`;
+            item.append(select, summary); card.append(item);
+          }
+          $('groups').append(card);
+        }
+      } catch (error) { $('groups').textContent = error.message; }
+      finally { $('explore').disabled = false; }
+    });
+    $('summarize').addEventListener('click', async () => {
+      $('summarize').disabled = true;
+      $('summary-status').textContent = 'Preparing summaries…';
+      try {
+        const response = await fetch('/api/summarize', {method: 'POST'});
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || 'Could not start summaries');
+        for (;;) {
+          const state = await fetch(`/api/jobs/${job.id}`).then(r => r.json());
+          if (state.stage === 'error') throw new Error(state.error);
+          $('summary-status').textContent = `Summaries: ${state.stage}${state.total ? ` ${state.done}/${state.total} files` : ''}`;
+          if (state.stage === 'done') break;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (error) { $('summary-status').textContent = error.message; }
+      finally { $('summarize').disabled = false; }
+    });
+    $('active-cluster').addEventListener('click', () => {
+      $('active-cluster').dataset.id = ''; $('active-cluster').textContent = '';
+    });
+    for (const field of ['source', 'folder']) $(field).addEventListener('input', () => {
+      $('active-cluster').dataset.id = ''; $('active-cluster').textContent = '';
     });
     status(); loadSources();
   </script>
