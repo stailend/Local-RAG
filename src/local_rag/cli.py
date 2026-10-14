@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from .changes import change_digest
 from .config import Settings
 from .evaluation import evaluate, load_cases
 from .library import cluster_sources, clusters, summarize_files
@@ -31,6 +32,7 @@ def parser() -> argparse.ArgumentParser:
     ingest.add_argument("path", type=Path)
     sync = commands.add_parser("sync", help="mirror a directory into the collection")
     sync.add_argument("path", type=Path)
+    sync.add_argument("--changes", action="store_true", help="describe content changes with the chat model")
     summary = commands.add_parser("summarize", help="summarize indexed files")
     summary.add_argument("--source", help="summarize only this file")
     commands.add_parser("clusters", help="group summarized files by topic")
@@ -286,12 +288,26 @@ def run(args: argparse.Namespace) -> None:
     elif args.command == "sync":
         if not args.path.is_dir():
             raise ValueError(f"sync path must be a directory: {args.path}")
-        result = store.sync(args.path, provider, args.chunk_size, args.overlap)
+        reports = []
+
+        def note(source, before, after):
+            try:
+                reports.append(f"{source}\n  {change_digest(before, after, provider)}")
+            except Exception as exc:
+                reports.append(f"{source}\n  Change report unavailable: {exc}")
+
+        result = store.sync(
+            args.path, provider, args.chunk_size, args.overlap,
+            on_change=note if args.changes else None,
+        )
         print(
             f"added={result.added} updated={result.updated} "
             f"deleted={result.deleted} unchanged={result.unchanged} "
             f"skipped={result.skipped} chunks={result.chunks}"
         )
+        if args.changes:
+            print("\nChange report (model-generated, verify against files):")
+            print("\n".join(reports) if reports else "No successful file changes.")
     elif args.command == "summarize":
         result = summarize_files(store, provider, args.source)
         print(f"summarized={result['created']} unchanged={result['unchanged']}")

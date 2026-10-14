@@ -87,11 +87,18 @@ Mirror a directory into a collection without embedding unchanged files:
 
 ```bash
 local-rag sync ./knowledge
+local-rag sync ./knowledge --changes
 ```
 
 The command reports added, updated, deleted, unchanged, and skipped files.
 Unlike `ingest`, it removes indexed files that no longer exist below the same
 directory root. Each sync root is tracked independently inside the collection.
+`--changes` adds a model-generated report for added, updated, and deleted files.
+For updated files it compares text retained in the index with the new indexed
+text and focuses the model on changed passages. This is a best-effort digest,
+not an exact audit trail: verify important claims against the original files.
+It sends changed content to your configured chat model, including a remote
+endpoint if you selected one; ordinary `sync` does not make these extra calls.
 
 ## Evaluation
 

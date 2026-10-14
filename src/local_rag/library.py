@@ -22,25 +22,7 @@ def summarize_files(store, provider, source: str | None = None, progress=None) -
             if progress:
                 progress(done, len(documents))
             continue
-        parts = [
-            f"{item['locator']}: {piece}"
-            for item in document["chunks"]
-            for piece in chunks(item["text"], 1200, 0)
-        ]
-        if not parts:
-            continue
-        while len(parts) > 1:
-            parts = [
-                provider.summarize(
-                    "Summarize the following parts in at most 120 words. "
-                    "Keep names, dates, and conclusions:\n\n" + "\n\n".join(parts[index:index + 4])
-                ).strip()
-                for index in range(0, len(parts), 4)
-            ]
-        summary = provider.summarize(
-            "Summarize this file in at most 150 words. Keep its main topic, "
-            "important facts, and conclusions:\n\n" + parts[0]
-        ).strip()
+        summary = summarize_document(document, provider)
         if not summary:
             raise RuntimeError(f"model returned an empty summary for {document['source']}")
         vector = provider.embed([summary])[0]
@@ -49,6 +31,28 @@ def summarize_files(store, provider, source: str | None = None, progress=None) -
         if progress:
             progress(done, len(documents))
     return result
+
+
+def summarize_document(document: dict, provider) -> str:
+    parts = [
+        f"{item['locator']}: {piece}"
+        for item in document["chunks"]
+        for piece in chunks(item["text"], 1200, 0)
+    ]
+    if not parts:
+        return ""
+    while len(parts) > 1:
+        parts = [
+            provider.summarize(
+                "Summarize the following parts in at most 120 words. "
+                "Keep names, dates, and conclusions:\n\n" + "\n\n".join(parts[index:index + 4])
+            ).strip()
+            for index in range(0, len(parts), 4)
+        ]
+    return provider.summarize(
+        "Summarize this file in at most 150 words. Keep its main topic, "
+        "important facts, and conclusions:\n\n" + parts[0]
+    ).strip()
 
 
 def group_files(rows: list[dict], min_similarity: float = 0.72) -> list[dict]:
