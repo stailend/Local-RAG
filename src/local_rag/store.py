@@ -129,7 +129,7 @@ class Store:
         return IngestResult(indexed_files, total_chunks, skipped)
 
     def sync(
-        self, root: Path, provider, chunk_size: int, overlap: int
+        self, root: Path, provider, chunk_size: int, overlap: int, on_change=None
     ) -> SyncResult:
         root_id = str(root.resolve())
         files = discover(root)
@@ -154,6 +154,7 @@ class Store:
             if previous and previous[0] == file_hash:
                 unchanged += 1
                 continue
+            before = self.source_chunks(source).get(source) if on_change and previous else None
             result = self.ingest(
                 path,
                 provider,
@@ -167,11 +168,16 @@ class Store:
             added += previous is None
             updated += previous is not None
             chunks_count += result.chunks
+            if on_change:
+                on_change(source, before, self.source_chunks(source).get(source))
 
         deleted = 0
         for source in existing.keys() - current_sources:
+            before = self.source_chunks(source).get(source) if on_change else None
             self._delete_source(existing[source][1])
             deleted += 1
+            if on_change:
+                on_change(source, before, None)
         return SyncResult(added, updated, deleted, unchanged, skipped, chunks_count)
 
     def search(

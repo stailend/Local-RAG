@@ -160,12 +160,22 @@ class StoreTest(unittest.TestCase):
                 FakeSparse(),
             )
 
-            initial = store.sync(knowledge, FakeProvider(), 1000, 100)
+            changes = []
+            initial = store.sync(
+                knowledge, FakeProvider(), 1000, 100,
+                on_change=lambda source, before, after: changes.append((source, before, after)),
+            )
+            self.assertEqual(len(changes), 2)
+            self.assertTrue(all(before is None and after is not None for _, before, after in changes))
             unchanged = store.sync(knowledge, FakeProvider(), 1000, 100)
             first.write_text("Cats sleep most of the day.", encoding="utf-8")
             removed.unlink()
             (knowledge / "added.md").write_text("Birds can fly.", encoding="utf-8")
-            changed = store.sync(knowledge, FakeProvider(), 1000, 100)
+            changes.clear()
+            changed = store.sync(
+                knowledge, FakeProvider(), 1000, 100,
+                on_change=lambda source, before, after: changes.append((source, before, after)),
+            )
 
             self.assertEqual((initial.added, initial.updated, initial.deleted), (2, 0, 0))
             self.assertEqual(unchanged.unchanged, 2)
@@ -174,6 +184,12 @@ class StoreTest(unittest.TestCase):
                 (1, 1, 1, 0),
             )
             self.assertEqual(store.status()[0], 2)
+            self.assertEqual(len(changes), 3)
+            updated = next(change for change in changes if change[0] == str(first.resolve()))
+            self.assertIn("Cats are quiet", updated[1]["chunks"][0]["text"])
+            self.assertIn("Cats sleep", updated[2]["chunks"][0]["text"])
+            removed = next(change for change in changes if change[0] == str(removed.resolve()))
+            self.assertIsNone(removed[2])
 
 
 if __name__ == "__main__":
