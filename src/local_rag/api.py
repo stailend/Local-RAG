@@ -54,6 +54,22 @@ class RagService:
     def clusters(self) -> dict[str, list[dict]]:
         return {"clusters": clusters(self.store, self.provider)}
 
+    def source_preview(self, source: str, locator: str, chunk: int,
+                       last_chunk: int | None = None) -> dict:
+        if not source or not locator or chunk < 0 or (last_chunk is not None and last_chunk < chunk):
+            raise ValueError("invalid source location")
+        document = self.store.source_chunks(source).get(source)
+        if not document:
+            raise FileNotFoundError("indexed source not found")
+        chunks = [
+            {"chunk": item["chunk"], "text": item["text"],
+             "selected": chunk <= item["chunk"] <= (last_chunk if last_chunk is not None else chunk)}
+            for item in document["chunks"] if item["locator"] == locator
+        ]
+        if not any(item["selected"] for item in chunks):
+            raise FileNotFoundError("indexed passage not found")
+        return {"source": source, "locator": locator, "chunks": chunks}
+
     def search(
         self,
         question: str,
@@ -103,7 +119,7 @@ class RagService:
             "answer": self.provider.answer(question, context),
             "retrieval_score": score,
             "sources": [
-                {key: item[key] for key in ("source", "locator", "chunk")}
+                {key: item[key] for key in ("source", "locator", "chunk", "last_chunk")}
                 for item in matches
             ],
         }
@@ -197,6 +213,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self.service.status())
         elif path == "/api/sources":
             self._json(self.service.sources())
+        elif path == "/api/source-preview":
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                self._json(self.service.source_preview(
+                    query.get("source", [""])[0], query.get("locator", [""])[0],
+                    int(query.get("chunk", ["-1"])[0]),
+                    int(query["last_chunk"][0]) if "last_chunk" in query else None,
+                ))
+            except (ValueError, TypeError) as exc:
+                self._json({"error": str(exc)}, 400)
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, 404)
+            except Exception as exc:
+                self._json({"error": str(exc)}, 502)
         elif path == "/api/clusters":
             try:
                 self._json(self.service.clusters())

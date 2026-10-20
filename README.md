@@ -141,6 +141,12 @@ is removed. The API exposes `GET /api/status`, `POST /api/search`, `POST /api/as
 `POST /api/uploads?filename=notes.pdf` (raw `application/octet-stream`), and
 `GET /api/jobs/{id}` for upload progress.
 
+Click a citation number in an answer (or its entry under Sources) to preview
+the indexed text from that page or section, with the cited chunk highlighted.
+`GET /api/source-preview?source=...&locator=...&chunk=...` serves only indexed
+text, not the original file; if a citation spans adjacent chunks, pass
+`last_chunk` to highlight the full cited passage.
+
 `/api/ask` refuses to call the chat model when the nearest dense cosine score is
 below `min_score` (default `0.50`, set it in the JSON request body). The returned
 `retrieval_score` is a similarity heuristic, not a calibrated probability of

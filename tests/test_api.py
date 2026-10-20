@@ -29,7 +29,7 @@ class FakeStore:
 
     def search(self, question, vector, limit, source=None, folder=None, sources=None):
         return [{
-            "source": "notes.md", "locator": "page 1", "chunk": 0,
+            "source": "/docs/notes.md", "locator": "page 1", "chunk": 0,
             "text": "The answer is here.", "_fused_score": 0.9,
         }][:limit]
 
@@ -45,7 +45,8 @@ class FakeStore:
 
     def source_chunks(self, source=None):
         return {"/docs/notes.md": {"source": "/docs/notes.md", "source_version": "v1",
-                                   "chunks": [{"locator": "page 1", "text": "The answer is here."}]}}
+                                   "chunks": [{"locator": "page 1", "chunk": 0,
+                                               "text": "The answer is here."}]}}
 
     def ingest(self, path, provider, chunk_size, overlap, progress=None):
         progress("embedding", 1, 2)
@@ -68,7 +69,25 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.service.sources()["folders"][0], "/docs")
         result = self.service.ask("What?")
         self.assertEqual(result["answer"], "answer: What?")
-        self.assertEqual(result["sources"][0]["source"], "notes.md")
+        self.assertEqual(result["sources"][0]["source"], "/docs/notes.md")
+        self.assertEqual(result["sources"][0]["last_chunk"], 0)
+
+    def test_source_preview_highlights_only_cited_chunks(self):
+        self.service.store.source_chunks = lambda source=None: {
+            "/docs/notes.md": {"chunks": [
+                {"locator": "page 1", "chunk": 0, "text": "Before"},
+                {"locator": "page 1", "chunk": 1, "text": "Evidence"},
+                {"locator": "page 2", "chunk": 0, "text": "Other page"},
+            ]}
+        }
+        result = self.service.source_preview("/docs/notes.md", "page 1", 1)
+        self.assertEqual([item["selected"] for item in result["chunks"]], [False, True])
+        result = self.service.source_preview("/docs/notes.md", "page 1", 0, 1)
+        self.assertEqual([item["selected"] for item in result["chunks"]], [True, True])
+        with self.assertRaises(FileNotFoundError):
+            self.service.source_preview("/docs/missing.md", "page 1", 0)
+        with self.assertRaises(FileNotFoundError):
+            self.service.source_preview("/docs/notes.md", "page 9", 0)
 
     def test_cluster_filters_question_and_lists_summary(self):
         group = self.service.clusters()["clusters"][0]
@@ -116,6 +135,14 @@ class ApiTest(unittest.TestCase):
         connection.request("GET", "/api/clusters")
         groups = json.loads(connection.getresponse().read())["clusters"]
         self.assertEqual(groups[0]["files"][0]["summary"], "Notes summary")
+        connection.request("GET", "/api/source-preview?source=%2Fdocs%2Fnotes.md&locator=page+1&chunk=0")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(json.loads(response.read())["chunks"][0]["selected"])
+        connection.request("GET", "/api/source-preview?source=%2Fdocs%2Fmissing.md&locator=page+1&chunk=0")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 404)
+        response.read()
         connection.request("POST", "/api/summarize")
         response = connection.getresponse()
         self.assertEqual(response.status, 202)

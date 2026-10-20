@@ -5,54 +5,188 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Local-RAG</title>
   <style>
-    :root { color-scheme: dark; font: 16px system-ui, sans-serif; }
-    body { max-width: 900px; margin: 0 auto; padding: 32px 20px; background: #101318; color: #eef2f7; }
-    h1 { margin-bottom: 4px; } .muted { color: #9ca8b8; }
-    form { display: flex; gap: 10px; margin: 28px 0; }
-    input { flex: 1; padding: 13px; border: 1px solid #3b4656; border-radius: 8px; background: #171d26; color: inherit; }
-    button { padding: 12px 18px; border: 0; border-radius: 8px; background: #3b82f6; color: white; cursor: pointer; }
+    :root {
+      color-scheme: light;
+      font: 16px/1.5 system-ui, -apple-system, sans-serif;
+      color: #30344d;
+      background: #f8f6f1;
+      --ink: #30344d;
+      --muted: #646980;
+      --line: #41465e;
+      --lavender: #e9e3ff;
+      --mint: #d9f4e7;
+      --peach: #ffe8dc;
+      --yellow: #fff2c6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: linear-gradient(90deg, #e9e5dc 1px, transparent 1px),
+                  linear-gradient(#e9e5dc 1px, transparent 1px), #f8f6f1;
+      background-size: 28px 28px;
+    }
+    .shell { max-width: 1180px; margin: auto; padding: 26px 24px 60px; }
+    .topbar, .brand, .workspace, .panel-heading, .actions { display: flex; align-items: center; }
+    .topbar { justify-content: space-between; gap: 20px; }
+    .brand { gap: 12px; text-decoration: none; color: var(--ink); }
+    .brand-mark { width: 42px; height: 42px; padding: 8px; background: var(--lavender); border: 2px solid var(--line); box-shadow: 4px 4px 0 var(--line); }
+    .brand-mark svg { display: block; width: 100%; height: 100%; }
+    .brand-name, .eyebrow, .panel-kicker, .status-pill, button, .footnote {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .brand-name { font-size: 17px; font-weight: 900; letter-spacing: -.06em; }
+    .status-pill { max-width: 55%; padding: 8px 12px; border: 2px solid var(--line); background: #fff; font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+    .status-pill::before { content: "■"; color: #8b75bc; margin-right: 8px; }
+    .hero { padding: 54px 0 35px; max-width: 760px; }
+    .eyebrow, .panel-kicker { margin: 0; color: #6f6b9f; font-size: 11px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 11px 0 10px; font-size: clamp(34px, 5vw, 58px); line-height: 1.08; letter-spacing: -.055em; }
+    .hero p:last-child { max-width: 590px; margin: 0; color: var(--muted); font-size: 16px; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); align-items: start; gap: 20px; }
+    .primary, .sidebar { display: grid; gap: 20px; min-width: 0; }
+    .panel, #groups .card {
+      position: relative; padding: 24px; border: 2px solid var(--line); background: #fffefa;
+      box-shadow: 6px 6px 0 var(--line);
+    }
+    .panel::before { content: ""; position: absolute; top: -2px; right: 18px; width: 18px; height: 6px; background: var(--line); }
+    .ask-panel { background: #f3efff; }
+    .upload-panel { background: #eaf8f0; }
+    .tools-panel { background: #fff1e8; }
+    .panel-heading { justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+    h2 { margin: 4px 0 0; font-size: 20px; line-height: 1.25; letter-spacing: -.035em; }
+    .pixel-spark { color: #ab8ed5; font: 24px ui-monospace, monospace; }
+    .muted, .help { color: var(--muted); }
+    .help { margin: 0 0 18px; font-size: 13px; }
+    form { margin: 0; }
+    .question-row { display: flex; gap: 10px; }
+    input { min-width: 0; width: 100%; padding: 13px 14px; border: 2px solid var(--line); border-radius: 0; background: #fffefa; color: var(--ink); font: inherit; }
+    input::placeholder { color: #7d8191; }
+    input:focus-visible, button:focus-visible { outline: 3px solid #a48bfa; outline-offset: 3px; }
+    button {
+      border: 2px solid var(--line); border-radius: 0; padding: 11px 15px;
+      background: var(--yellow); color: var(--ink); box-shadow: 3px 3px 0 var(--line);
+      font-size: 12px; font-weight: 800; cursor: pointer; transition: transform .12s, box-shadow .12s;
+    }
+    button:hover:not(:disabled) { transform: translate(1px, 1px); box-shadow: 2px 2px 0 var(--line); }
+    button:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: none; }
     button:disabled { opacity: .6; cursor: wait; }
-    #answer { white-space: pre-wrap; line-height: 1.55; }
-    .card { margin-top: 16px; padding: 18px; border: 1px solid #2b3543; border-radius: 10px; background: #151b24; }
-    li { margin: 10px 0; color: #b9c5d4; } code { color: #8fc7ff; }
-    #status { font-size: 13px; }
-    .filters { display: flex; gap: 10px; margin-top: -14px; }
-    .filters input { width: 50%; }
-    #upload-form { align-items: center; margin: 20px 0; }
-    #upload-form input { min-width: 0; }
-    progress { width: 100%; height: 12px; }
-    #groups button { margin: 4px 8px 4px 0; }
-    #groups p { margin: 6px 0 14px; white-space: pre-wrap; }
+    #submit { min-width: 90px; background: #c9baff; }
+    .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .filters input { padding: 9px 11px; font-size: 13px; }
+    .answer-panel { min-height: 160px; }
+    #answer { min-height: 55px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+    #sources { list-style: none; padding: 0; margin: 0; }
+    #sources li { margin: 9px 0; }
+    #sources:empty::after { content: "Sources will show up here after your first answer."; color: var(--muted); font-size: 13px; }
+    .citation { padding: 2px 5px; margin: 0 2px; border: 0; background: transparent; box-shadow: none; color: #5542a0; font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+    .citation:hover:not(:disabled), .citation:active:not(:disabled) { transform: none; box-shadow: none; color: #322179; }
+    #sources .citation { margin: 0; padding: 3px 0; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
+    #preview { margin-top: 18px; padding: 16px; border: 2px solid #cdc6e2; background: #f7f3ff; overflow-wrap: anywhere; }
+    #preview p { margin-bottom: 0; white-space: pre-wrap; line-height: 1.6; }
+    #preview mark { background: #fff0a6; color: var(--ink); box-decoration-break: clone; }
+    #upload-form { display: grid; gap: 12px; }
+    #file { max-width: 100%; background: #fffefa; font-size: 13px; }
+    #file::file-selector-button { margin-right: 12px; padding: 5px 9px; border: 1px solid var(--line); background: var(--mint); color: var(--ink); font: 700 12px ui-monospace, monospace; cursor: pointer; }
+    #upload { width: 100%; background: #aee5c9; }
+    #upload-status, #summary-status { min-height: 20px; margin-top: 12px; font-size: 12px; overflow-wrap: anywhere; }
+    progress { width: 100%; height: 12px; margin-top: 7px; accent-color: #7fc8a2; }
+    .actions { align-items: stretch; flex-direction: column; gap: 10px; }
+    .actions button { width: 100%; text-align: left; }
+    #summarize { background: #ffd8c0; }
+    #explore { background: #eee5ff; }
+    #active-cluster { margin: 8px 0; width: 100%; text-align: left; background: var(--mint); }
+    #active-cluster:empty { display: none; }
+    #groups { font-size: 13px; }
+    #groups .card { margin-top: 14px; padding: 14px; background: #fffefa; box-shadow: 3px 3px 0 var(--line); }
+    #groups .card > button { max-width: 100%; text-align: left; overflow-wrap: anywhere; background: var(--lavender); }
+    #groups .card p { margin: 12px 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #groups .card p button { margin-right: 5px; padding: 4px 7px; background: var(--mint); }
+    .footnote { margin: 32px 0 0; color: var(--muted); font-size: 11px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 800px) {
+      .workspace { grid-template-columns: 1fr; }
+      .sidebar { grid-template-columns: 1fr 1fr; }
+      .hero { padding-top: 38px; }
+    }
+    @media (max-width: 580px) {
+      .shell { padding: 18px 16px 48px; }
+      .topbar { align-items: flex-start; }
+      .status-pill { max-width: 48%; }
+      .hero { padding: 35px 0 25px; }
+      .sidebar, .filters { grid-template-columns: 1fr; }
+      .panel { padding: 19px; }
+      .question-row { flex-direction: column; }
+      #submit { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) { button { transition: none; } }
   </style>
 </head>
 <body>
-  <h1>Local-RAG</h1>
-  <div id="status" class="muted">Checking index…</div>
-  <form id="upload-form">
-    <input id="file" type="file" required aria-label="Document to upload">
-    <button id="upload">Upload & index</button>
-  </form>
-  <div id="upload-status" class="muted" role="status"></div>
-  <progress id="upload-progress" hidden></progress>
-  <form id="form">
-    <input id="question" autocomplete="off" placeholder="Ask about your indexed documents…" required>
-    <button id="submit">Ask</button>
-  </form>
-  <div class="filters">
-    <input id="source" list="source-options" placeholder="Optional: file path" aria-label="Filter by file">
-    <datalist id="source-options"></datalist>
-    <input id="folder" list="folder-options" placeholder="Optional: folder path" aria-label="Filter by folder">
-    <datalist id="folder-options"></datalist>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Local-RAG home">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 8 8" shape-rendering="crispEdges"><path fill="#6d5aa0" d="M1 0h6v1H1zM0 1h1v5H0zM7 1h1v5H7zM1 6h6v1H1zM2 2h4v1H2zM2 4h4v1H2zM2 7h1v1H2zM5 7h1v1H5z"/></svg></span>
+        <span class="brand-name">LOCAL / RAG</span>
+      </a>
+      <div id="status" class="status-pill" role="status">Checking index…</div>
+    </header>
+    <main>
+      <div class="hero">
+        <p class="eyebrow">✦ Your private knowledge space</p>
+        <h1>Find the little things<br>in all your files.</h1>
+        <p>Add documents, ask questions, and trace every answer back to its source. Works with local or connected models.</p>
+      </div>
+      <div class="workspace">
+        <div class="primary">
+          <section class="panel ask-panel" aria-labelledby="ask-title">
+            <div class="panel-heading"><div><p class="panel-kicker">01 / Ask</p><h2 id="ask-title">What are you looking for?</h2></div><span class="pixel-spark" aria-hidden="true">✦</span></div>
+            <form id="form"><div class="question-row">
+              <input id="question" autocomplete="off" placeholder="Ask about your documents…" aria-label="Question" required>
+              <button id="submit">Ask ↗</button>
+            </div></form>
+            <div class="filters">
+              <input id="source" list="source-options" placeholder="Filter by file (optional)" aria-label="Filter by file">
+              <datalist id="source-options"></datalist>
+              <input id="folder" list="folder-options" placeholder="Filter by folder (optional)" aria-label="Filter by folder">
+              <datalist id="folder-options"></datalist>
+            </div>
+          </section>
+          <section class="panel answer-panel" aria-labelledby="answer-title">
+            <div class="panel-heading"><div><p class="panel-kicker">02 / Answer</p><h2 id="answer-title">Here's what I found</h2></div></div>
+            <div id="answer" class="muted" aria-live="polite">Your answer will appear here.</div>
+          </section>
+          <section class="panel sources-panel" aria-labelledby="sources-title">
+            <div class="panel-heading"><div><p class="panel-kicker">03 / Evidence</p><h2 id="sources-title">Source notes</h2></div></div>
+            <ul id="sources"></ul><div id="preview" role="region" aria-live="polite" hidden></div>
+          </section>
+        </div>
+        <aside class="sidebar" aria-label="Library tools">
+          <section class="panel upload-panel" aria-labelledby="upload-title">
+            <div class="panel-heading"><div><p class="panel-kicker">Your library</p><h2 id="upload-title">Add a file</h2></div></div>
+            <p class="help">PDFs, images, notes and more. We'll make them searchable.</p>
+            <form id="upload-form">
+              <input id="file" type="file" required aria-label="Document to upload">
+              <button id="upload">Upload & index ↗</button>
+            </form>
+            <div id="upload-status" class="muted" role="status"></div>
+            <progress id="upload-progress" hidden></progress>
+          </section>
+          <section class="panel tools-panel" aria-labelledby="tools-title">
+            <div class="panel-heading"><div><p class="panel-kicker">Explore</p><h2 id="tools-title">See the bigger picture</h2></div></div>
+            <p class="help">Make quick summaries or wander through related documents.</p>
+            <div class="actions">
+              <button id="summarize" type="button">✦ Generate / update summaries</button>
+              <button id="explore" type="button">▦ Explore document groups</button>
+            </div>
+            <div id="summary-status" class="muted" role="status"></div>
+            <button id="active-cluster" type="button" aria-label="Clear selected group"></button>
+            <div id="groups" aria-live="polite"></div>
+          </section>
+        </aside>
+      </div>
+      <p class="footnote">LOCAL-RAG ✦ A quiet place for your knowledge.</p>
+    </main>
   </div>
-  <section class="card"><div id="answer" class="muted">Your answer will appear here.</div></section>
-  <section class="card"><strong>Sources</strong><ul id="sources"></ul></section>
-  <section class="card">
-    <button id="summarize" type="button">Generate / update summaries</button>
-    <button id="explore" type="button">Explore document groups</button>
-    <div id="summary-status" class="muted" role="status"></div>
-    <span id="active-cluster" class="muted"></span>
-    <div id="groups" aria-live="polite"></div>
-  </section>
   <script>
     const $ = id => document.getElementById(id);
     async function status() {
@@ -69,16 +203,56 @@
         }));
       }
     }
+    async function previewSource(source) {
+      const panel = $('preview'); panel.hidden = false; panel.textContent = 'Loading source…';
+      const query = new URLSearchParams({source: source.source, locator: source.locator,
+        chunk: source.chunk, last_chunk: source.last_chunk ?? source.chunk});
+      try {
+        const response = await fetch(`/api/source-preview?${query}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load source');
+        panel.replaceChildren();
+        const title = document.createElement('strong');
+        title.textContent = `${data.source.split(/[\\/]/).pop()} · ${data.locator}`;
+        panel.append(title);
+        for (const chunk of data.chunks) {
+          const paragraph = document.createElement('p');
+          if (chunk.selected) {
+            const highlight = document.createElement('mark');
+            highlight.textContent = chunk.text; paragraph.append(highlight);
+          } else paragraph.textContent = chunk.text;
+          panel.append(paragraph);
+        }
+      } catch (error) { panel.textContent = error.message; }
+    }
+    function showAnswer(answer, sources) {
+      const container = $('answer'); container.replaceChildren();
+      for (const part of answer.split(/(\[\d+\])/g)) {
+        const number = /^\[(\d+)\]$/.exec(part);
+        if (number && sources[Number(number[1]) - 1]) {
+          const button = document.createElement('button'); button.type = 'button';
+          button.className = 'citation'; button.textContent = part;
+          button.setAttribute('aria-label', `Preview source ${number[1]}`);
+          button.addEventListener('click', () => previewSource(sources[Number(number[1]) - 1]));
+          container.append(button);
+        } else container.append(document.createTextNode(part));
+      }
+    }
     $('form').addEventListener('submit', async event => {
       event.preventDefault();
       $('submit').disabled = true; $('answer').textContent = 'Thinking…'; $('sources').textContent = '';
+      $('preview').hidden = true; $('preview').textContent = '';
       try {
         const response = await fetch('/api/ask', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: $('question').value, source: $('source').value, folder: $('folder').value, cluster: $('active-cluster').dataset.id || ''}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Request failed');
-        $('answer').textContent = data.answer;
-        for (const source of data.sources) {
-          const item = document.createElement('li'); item.textContent = `${source.source.split(/[\\/]/).pop()} · ${source.locator} · chunk ${source.chunk}`; $('sources').append(item);
+        showAnswer(data.answer, data.sources);
+        for (const [index, source] of data.sources.entries()) {
+          const item = document.createElement('li');
+          const button = document.createElement('button'); button.type = 'button'; button.className = 'citation';
+          button.textContent = `[${index + 1}] ${source.source.split(/[\\/]/).pop()} · ${source.locator} · chunk ${source.chunk}`;
+          button.addEventListener('click', () => previewSource(source));
+          item.append(button); $('sources').append(item);
         }
       } catch (error) { $('answer').textContent = error.message; }
       finally { $('submit').disabled = false; }
