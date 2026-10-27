@@ -134,7 +134,8 @@ local-rag serve
 open http://127.0.0.1:8000
 ```
 
-Upload a supported file (up to 25 MiB) in the browser. Its progress is shown
+Drop a supported file onto the upload area or choose it with the file picker
+(one file at a time, up to 25 MiB). Its progress is shown
 while text is extracted, embedded, and indexed; uploaded files are kept under
 `.localrag/uploads/` so citations still point to the source. A failed upload
 is removed. The API exposes `GET /api/status`, `POST /api/search`, `POST /api/ask`,
@@ -185,7 +186,9 @@ local-rag ask "What do these files have in common?" --cluster GROUP_ID
 prints a topic label, member files, and their summaries. In the browser, click
 **Generate / update summaries**, then **Explore document groups** to see the
 same view, select a group or file, and
-ask questions within it. Groups are virtual: original files are never moved.
+ask questions within it. The knowledge map shows each topic connected to its
+files; clicking any node applies that search filter. Groups are virtual:
+original files are never moved.
 
 Run `summarize` again after `ingest` or `sync`. Changed and deleted files lose
 their old summaries automatically. Summaries live in a separate Qdrant
@@ -270,6 +273,7 @@ for example, `LOCAL_RAG_OCR_LANGUAGE=eng+deu+rus` for multilingual documents.
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
+node --test tests/test_web_ui.js
 ```
 
 ## Hierarchical retrieval experiment

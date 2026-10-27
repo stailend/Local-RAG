@@ -85,8 +85,14 @@
     #preview p { margin-bottom: 0; white-space: pre-wrap; line-height: 1.6; }
     #preview mark { background: #fff0a6; color: var(--ink); box-decoration-break: clone; }
     #upload-form { display: grid; gap: 12px; }
+    .drop-zone { display: grid; justify-items: center; gap: 4px; padding: 20px 14px; border: 2px dashed #79a78c; background: #f8fffa; text-align: center; }
+    .drop-zone.drag-over, .drop-zone:focus-within { border-style: solid; background: #d9f4e7; outline: 2px solid #79a78c; outline-offset: 2px; }
+    .drop-icon { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 8px; border: 2px solid var(--line); background: var(--lavender); box-shadow: 3px 3px 0 var(--line); font: 900 24px ui-monospace, monospace; }
+    .drop-zone label { font-weight: 700; cursor: pointer; }
+    .drop-zone .muted { font-size: 12px; }
     #file { max-width: 100%; background: #fffefa; font-size: 13px; }
     #file::file-selector-button { margin-right: 12px; padding: 5px 9px; border: 1px solid var(--line); background: var(--mint); color: var(--ink); font: 700 12px ui-monospace, monospace; cursor: pointer; }
+    #file-name { min-height: 18px; color: #386b50; font: 700 12px ui-monospace, monospace; overflow-wrap: anywhere; }
     #upload { width: 100%; background: #aee5c9; }
     #upload-status, #summary-status { min-height: 20px; margin-top: 12px; font-size: 12px; overflow-wrap: anywhere; }
     progress { width: 100%; height: 12px; margin-top: 7px; accent-color: #7fc8a2; }
@@ -101,6 +107,18 @@
     #groups .card > button { max-width: 100%; text-align: left; overflow-wrap: anywhere; background: var(--lavender); }
     #groups .card p { margin: 12px 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
     #groups .card p button { margin-right: 5px; padding: 4px 7px; background: var(--mint); }
+    .map-panel { margin-top: 24px; background: #f3efff; }
+    .map-tree { max-height: 550px; overflow: auto; padding: 5px 10px 16px 4px; }
+    .map-root { display: inline-block; padding: 9px 14px; border: 2px solid var(--line); background: var(--peach); box-shadow: 3px 3px 0 var(--line); font: 800 12px ui-monospace, monospace; }
+    .map-branches { margin: 0 0 0 22px; padding: 9px 0 0 22px; border-left: 2px dashed #aaa0c8; }
+    .map-branch { position: relative; display: grid; grid-template-columns: minmax(150px, 220px) 34px minmax(0, 1fr); align-items: center; padding: 10px 0; }
+    .map-branch::before { content: ""; position: absolute; top: 50%; left: -22px; width: 22px; border-top: 2px dashed #aaa0c8; }
+    .map-link { border-top: 2px dashed #aaa0c8; }
+    .map-topic button { width: 100%; text-align: left; background: var(--lavender); overflow-wrap: anywhere; }
+    .map-files { display: flex; flex-wrap: wrap; gap: 9px; }
+    .map-files button { max-width: 220px; text-align: left; background: var(--mint); overflow-wrap: anywhere; }
+    .map-branch:nth-child(3n) .map-files button { background: var(--yellow); }
+    .map-branch:nth-child(3n + 2) .map-files button { background: var(--peach); }
     .footnote { margin: 32px 0 0; color: var(--muted); font-size: 11px; }
     [hidden] { display: none !important; }
     @media (max-width: 800px) {
@@ -117,6 +135,10 @@
       .panel { padding: 19px; }
       .question-row { flex-direction: column; }
       #submit { width: 100%; }
+      .map-branch { grid-template-columns: 1fr; }
+      .map-topic { max-width: 240px; }
+      .map-link { width: 0; height: 16px; margin-left: 18px; border-top: 0; border-left: 2px dashed #aaa0c8; }
+      .map-files { padding-left: 18px; }
     }
     @media (prefers-reduced-motion: reduce) { button { transition: none; } }
   </style>
@@ -163,9 +185,15 @@
         <aside class="sidebar" aria-label="Library tools">
           <section class="panel upload-panel" aria-labelledby="upload-title">
             <div class="panel-heading"><div><p class="panel-kicker">Your library</p><h2 id="upload-title">Add a file</h2></div></div>
-            <p class="help">PDFs, images, notes and more. We'll make them searchable.</p>
+            <p class="help">PDFs, images, notes and more. One file at a time, up to 25 MiB.</p>
             <form id="upload-form">
-              <input id="file" type="file" required aria-label="Document to upload">
+              <div id="drop-zone" class="drop-zone">
+                <span class="drop-icon" aria-hidden="true">↓</span>
+                <label for="file">Drop one file here</label>
+                <span class="muted">or choose one below</span>
+                <input id="file" type="file" aria-label="Choose document to upload">
+                <span id="file-name" aria-live="polite"></span>
+              </div>
               <button id="upload">Upload & index ↗</button>
             </form>
             <div id="upload-status" class="muted" role="status"></div>
@@ -184,6 +212,11 @@
           </section>
         </aside>
       </div>
+      <section id="map-panel" class="panel map-panel" aria-labelledby="map-title" hidden>
+        <div class="panel-heading"><div><p class="panel-kicker">Your connections</p><h2 id="map-title">Knowledge map</h2></div><span class="pixel-spark" aria-hidden="true">✦</span></div>
+        <p class="help">Follow a topic to its files. Pick any node to search only there.</p>
+        <div class="map-tree"><div class="map-root">✦ Your library</div><div id="knowledge-map" class="map-branches"></div></div>
+      </section>
       <p class="footnote">LOCAL-RAG ✦ A quiet place for your knowledge.</p>
     </main>
   </div>
@@ -257,10 +290,35 @@
       } catch (error) { $('answer').textContent = error.message; }
       finally { $('submit').disabled = false; }
     });
+    let droppedFile = null;
+    $('file').addEventListener('change', () => {
+      droppedFile = null;
+      $('file-name').textContent = $('file').files[0]?.name || '';
+      $('upload-status').textContent = '';
+    });
+    $('drop-zone').addEventListener('dragenter', event => {
+      event.preventDefault(); $('drop-zone').classList.add('drag-over');
+    });
+    $('drop-zone').addEventListener('dragover', event => { event.preventDefault(); });
+    $('drop-zone').addEventListener('dragleave', event => {
+      if (!$('drop-zone').contains(event.relatedTarget)) $('drop-zone').classList.remove('drag-over');
+    });
+    $('drop-zone').addEventListener('drop', event => {
+      event.preventDefault(); $('drop-zone').classList.remove('drag-over');
+      $('file').value = '';
+      $('upload-status').textContent = '';
+      if (event.dataTransfer.files.length !== 1) {
+        droppedFile = null;
+        $('file-name').textContent = 'Choose one file at a time.';
+        return;
+      }
+      droppedFile = event.dataTransfer.files[0];
+      $('file-name').textContent = droppedFile.name;
+    });
     $('upload-form').addEventListener('submit', async event => {
       event.preventDefault();
-      const file = $('file').files[0];
-      if (!file) return;
+      const file = droppedFile || $('file').files[0];
+      if (!file) { $('upload-status').textContent = 'Choose a file first.'; return; }
       $('upload').disabled = true;
       $('upload-status').textContent = `Uploading ${file.name}…`;
       $('upload-progress').hidden = false;
@@ -276,46 +334,72 @@
           if (state.stage === 'error') throw new Error(state.error);
           $('upload-status').textContent = `${state.filename}: ${state.stage}${state.total ? ` ${state.done}/${state.total} chunks` : ''}`;
           if (state.total) { $('upload-progress').max = state.total; $('upload-progress').value = state.done; }
-          if (state.stage === 'done') { await status(); await loadSources(); break; }
+          if (state.stage === 'done') {
+            droppedFile = null; $('file').value = ''; $('file-name').textContent = '';
+            await status(); await loadSources(); break;
+          }
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (error) { $('upload-status').textContent = error.message; }
       finally { $('upload').disabled = false; $('upload-progress').hidden = true; }
     });
+    function selectGroup(group) {
+      $('active-cluster').dataset.id = group.id;
+      $('active-cluster').textContent = `Searching group: ${group.label} (click to clear)`;
+      $('source').value = ''; $('folder').value = '';
+      $('question').focus();
+    }
+    function selectFile(file) {
+      $('source').value = file.source;
+      $('folder').value = '';
+      $('active-cluster').dataset.id = '';
+      $('active-cluster').textContent = '';
+      $('question').focus();
+    }
     $('explore').addEventListener('click', async () => {
       $('explore').disabled = true;
       $('groups').textContent = 'Loading summaries and groups…';
+      $('map-panel').hidden = true;
       try {
         const response = await fetch('/api/clusters');
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Could not load groups');
         $('groups').replaceChildren();
+        $('knowledge-map').replaceChildren();
         if (!data.clusters.length) $('groups').textContent = 'No summaries yet. Run local-rag summarize first.';
         for (const group of data.clusters) {
+          const branch = document.createElement('div'); branch.className = 'map-branch';
+          const topic = document.createElement('div'); topic.className = 'map-topic';
+          const topicButton = document.createElement('button'); topicButton.type = 'button';
+          topicButton.textContent = `${group.label} · ${group.files.length} files`;
+          topicButton.addEventListener('click', () => selectGroup(group));
+          topic.append(topicButton);
+          const link = document.createElement('div'); link.className = 'map-link'; link.setAttribute('aria-hidden', 'true');
+          const fileNodes = document.createElement('div'); fileNodes.className = 'map-files';
           const card = document.createElement('div'); card.className = 'card';
           const pick = document.createElement('button');
           pick.type = 'button'; pick.textContent = `${group.label} · ${group.files.length} files`;
-          pick.addEventListener('click', () => {
-            $('active-cluster').dataset.id = group.id;
-            $('active-cluster').textContent = `Searching group: ${group.label} (click to clear)`;
-            $('source').value = ''; $('folder').value = '';
-          });
+          pick.addEventListener('click', () => selectGroup(group));
           card.append(pick);
           for (const file of group.files) {
+            const node = document.createElement('button'); node.type = 'button';
+            node.textContent = file.source.split(/[\\/]/).pop();
+            node.title = file.summary;
+            node.addEventListener('click', () => selectFile(file));
+            fileNodes.append(node);
             const item = document.createElement('p');
             const select = document.createElement('button');
             select.type = 'button'; select.textContent = file.source.split(/[\\/]/).pop();
-            select.addEventListener('click', () => {
-              $('source').value = file.source;
-              $('active-cluster').dataset.id = '';
-              $('active-cluster').textContent = '';
-            });
+            select.addEventListener('click', () => selectFile(file));
             const summary = document.createElement('span');
             summary.textContent = ` ${file.summary}`;
             item.append(select, summary); card.append(item);
           }
+          branch.append(topic, link, fileNodes); $('knowledge-map').append(branch);
           $('groups').append(card);
         }
+        $('map-panel').hidden = !data.clusters.length;
+        if (data.clusters.length) $('map-panel').scrollIntoView({block: 'start'});
       } catch (error) { $('groups').textContent = error.message; }
       finally { $('explore').disabled = false; }
     });
